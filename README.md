@@ -1,190 +1,293 @@
 # DIGIT SDK
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE.txt)
 
-Modified version of [gs_sdk](https://github.com/joehjhuang/gs_sdk) (depth estimation via per-sensor calibration) integrating [Sparsh](https://github.com/facebookresearch/sparsh) (cross-sensor force estimation), with automatic DIGIT identification, parallel processing, STM32 corruption recovery, and ROS2 integration.
+`digit_sdk` is a multi-sensor tactile perception and ROS 2 stack for
+[DIGIT](https://digit.ml/) sensors. It provides metric depth estimation,
+optional force estimation, isolated camera capture, shared batched GPU
+inference, camera-corruption recovery, and independent raw-image, depth, and
+point-cloud publication.
 
-**Authors**: [Byung-Hyun Song](https://github.com/bhsong1011) (bh.song@snu.ac.kr)
+Depth uses the Tactile Transformer released with
+[NeuralFeels](https://github.com/facebookresearch/neuralfeels). One frozen
+encoder is shared by the active sensor batch, while each sensor uses its own
+fine-tuned decoder. The custom calibration data combines sphere-indentation
+geometry inspired by [GS-SDK](https://github.com/joehjhuang/gs_sdk) with
+manually annotated real-world contacts. The calibration approach is also
+informed by [digit-depth](https://github.com/vocdex/digit-depth).
 
-## Support
+Force estimation is a separate, optional
+[Sparsh](https://github.com/facebookresearch/sparsh) pipeline.
 
-- Ubuntu 22.04, ROS2 Humble
-- DIGIT tactile sensors (YUYV, up to 640×480 @ 60Hz)
-- Python >= 3.9, CUDA (optional, for force estimation)
+**Author:** [Byung-Hyun Song](https://github.com/bhsong1011)
+(bh.song@snu.ac.kr)
+
+## Method and attribution
+
+| Component | Source or influence | This project |
+|---|---|---|
+| Depth backbone | NeuralFeels Tactile Transformer | Shared frozen encoder |
+| Sensor adaptation | Custom calibration | One fine-tuned decoder per sensor |
+| Geometric supervision | GS-SDK-inspired calibration | 3, 5, 7, and 9 mm sphere contacts |
+| Real-contact supervision | Custom data | Binary manual contact masks |
+| Temporal refinement | NeuralFeels finite weighted blend | Fixed five-frame FIR per sensor |
+| Contact suppression | Runtime postprocessing | `0.1 mm` cutoff by default |
+| Force estimation | Sparsh | Optional, separate from depth |
+| Additional depth influence | digit-depth | Per-sensor DIGIT calibration |
+
+GS-SDK and digit-depth are methodological influences, not production runtime
+backends.
+
+## Production depth pipeline
+
+```text
+DIGIT RGB
+  → Tactile Transformer shared encoder
+  → sensor-specific decoder
+  → raw metric depth in mm
+  → five-frame NeuralFeels FIR
+  → depth_cutoff (default 0.1 mm)
+  → ROS depth in metres / point cloud in metres
+```
+
+The FIR operates on unthresholded model output and maintains independent
+history for every sensor. Its history resets after a non-monotonic timestamp
+or a gap greater than `100 ms`. The cutoff is applied afterward and does not
+affect model inference, FIR history, or training. Set `depth_cutoff:=0.0` to
+disable thresholding.
+
+Production decoders use the `mixed` objective, combining ball-depth
+supervision with manual real-contact support.
+
+## Features
+
+- Multi-DIGIT automatic serial discovery and registration.
+- One isolated camera process per sensor.
+- One shared batched encoder and sensor-specific decoders.
+- Generation-checked camera and surface shared memory.
+- Latest-frame scheduling without an unbounded queue.
+- STM32 tear detection, stream recovery, and frame-rate watchdog.
+- Independent raw, depth, and point-cloud outputs.
+- Metric `32FC1` ROS depth and metric point clouds.
+- Optional Sparsh force estimation.
+
+## Requirements
+
+- Ubuntu 22.04
+- ROS 2 Humble
+- Python 3.10 or newer
+- DIGIT tactile sensors, tested at `320×240 @ 60 Hz`
+- CUDA-capable GPU recommended for production depth and force estimation
+
+CPU depth inference is supported for development, but the multi-sensor rate
+target is evaluated on CUDA.
 
 ## Installation
 
 ```bash
 git clone git@github.com:SNU-SRBL/digit_sdk.git
 cd digit_sdk
-pip install -e .
+
+python3 -m pip install -e .
+colcon build --packages-select digit_sdk --symlink-install
+source install/setup.bash
 ```
 
-### Force Estimation (Optional)
+### Optional force dependencies
 
 ```bash
-python scripts/download_models.py    # downloads Sparsh models (~1.7 GB)
-pip install -e .[gpu]                 # optional xformers for GPU acceleration
+python3 scripts/download_models.py
+python3 -m pip install -e ".[gpu]"
 ```
 
-Models saved to `models/`. Depth pipeline works on CPU. Force pipeline recommended on GPU (~50-80ms vs 500-1000ms CPU).
+The download is approximately `1.7 GB` and stores Sparsh models under
+`models/`.
 
-## Sensor Registration
+## Sensor registration
 
-Place `{serial}.yaml` in `sensors/{serial}/{serial}.yaml` for each DIGIT sensor.
+Each sensor requires:
 
-## ROS2 Launch
+```text
+sensors/<serial>/<serial>.yaml
+sensors/<serial>/model/depth/decoder.pth
+sensors/<serial>/model/depth/metadata.json
+```
+
+The YAML file defines the camera stream and sensor geometry. The decoder and
+metadata are produced by the calibration workflow.
+
+## ROS 2 launch
+
+Launch all registered sensors:
 
 ```bash
+source install/setup.bash
 ros2 launch digit_sdk multi_sensor_tactile_streamer.launch.py
 ```
 
-With options:
+Launch selected sensors:
 
 ```bash
 ros2 launch digit_sdk multi_sensor_tactile_streamer.launch.py \
-  mode:=depth outputs:=depth model_device:=cuda rate:=60.0 enable_force:=true
+  serials:=D21119,D21242,D21273,D21275 \
+  publish_raw:=true \
+  publish_depth:=true \
+  publish_pointcloud:=false \
+  depth_cutoff:=0.1 \
+  model_device:=cuda \
+  rate:=60.0
 ```
 
-**Published topics**:
-| Topic | Type | Description |
-|-------|------|-------------|
-| `/tactile/{serial}/raw` | `sensor_msgs/Image` (bgr8) | Raw camera frame (from camera config), Best Effort |
-| `/tactile/{serial}/depth` | `sensor_msgs/Image` (mono8) | Depth in mm |
-| `/tactile/{serial}/pointcloud` | `sensor_msgs/PointCloud2` | XYZ point cloud |
-| `/tactile/{serial}/force_field` | `sensor_msgs/Image` (32FC3) | Force field (R=Fx, G=Fy, B=Fz) |
-| `/tactile/{serial}/force_field_viz` | `sensor_msgs/Image` (rgb8) | RViz-friendly force visualization |
-| `/tactile/{serial}/force_vector` | `geometry_msgs/WrenchStamped` | Aggregated force vector |
+### Published topics
 
-**Launch parameters**:
+| Topic | Type | Description |
+|---|---|---|
+| `/tactile/{serial}/raw` | `sensor_msgs/Image` (`bgr8`) | Raw camera image |
+| `/tactile/{serial}/depth` | `sensor_msgs/Image` (`32FC1`) | FIR-filtered, cutoff-processed depth in metres |
+| `/tactile/{serial}/pointcloud` | `sensor_msgs/PointCloud2` | XYZ in metres from the latest depth generation |
+
+### Launch parameters
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
-| `rate` | 60.0 | Camera capture rate (Hz) |
-| `mode` | depth | Processing mode: depth, gradient, pointcloud, force_field, force_vector |
-| `outputs` | — | Comma-separated output list (overrides mode) |
-| `model_device` | cuda | Device: cuda or cpu |
-| `enable_force` | false | Enable Sparsh force estimation |
-| `use_mask` | true | Apply contact mask |
-| `sensors_root` | auto | Path to sensor configs |
+|---|---:|---|
+| `serials` | auto | Comma-separated serials; empty discovers registered sensors |
+| `rate` | `60.0` | Requested inference and publication rate in Hz |
+| `model_device` | `cuda` | `cuda` or `cpu` |
+| `publish_raw` | `true` | Launch raw-image publishers |
+| `publish_depth` | `true` | Publish `32FC1` metric depth |
+| `publish_pointcloud` | `false` | Derive and publish point clouds |
+| `depth_cutoff` | `0.1` | Cutoff in millimetres; `0` disables it |
+| `point_sample_mm` | `0.2` | Point-cloud spacing; `0` retains every pixel |
+| `sensors_root` | auto | Sensor configuration and model root |
 
-**RViz notes**: Set Fixed Frame to `tactile_{serial}`. Use `force_field_viz` for image display (32FC3 not supported by RViz Image).
+Raw, depth, and point cloud are independent. Disabled outputs do not launch
+their publisher or derived compute path.
 
-## Architecture
+## Runtime architecture
 
-### Process Layout (4-camera deployment)
-
-```
-Launch auto-cleanup: pkill stale + rm /dev/shm before start.
-
-camera_shm ×4  ──→  /dev/shm/tactile_*  (lock-free, dynamic size)
-  Core 0-3           plain Python, no rclpy, own GIL
-  │                   Camera.get_image():
-  │                     ├ _is_corrupt() → chan_absdiff step-detector
-  │                     ├ FPS watchdog → _recover() if gap > 1.5× expected
-  │                     └ _recover() → STREAMOFF/STREAMON (~270ms)
-
-raw_bridge ×4   ←──  /dev/shm/tactile_*  ──→  /tactile/{serial}/raw (DDS)
-  Core 4-7           rclpy SingleThreadedExecutor(1), own GIL
-                      Reads SHM → tobytes() → publish Image (bgr8)
-
-process_node ×1  ←──  /dev/shm/tactile_*  ──→  depth/pc/force (DDS)
-  Core free           rclpy MultiThreadedExecutor(4), CUDA
-                      ProcessingEngine: read SHM → feed model → publish
+```text
+camera_shm ×N ── camera SHM ──┬── raw_publisher ×N ── bgr8
+                              └── pipeline_node ×1
+                                     │ shared encoder batch
+                                     │ per-sensor decoders
+                                     │ per-sensor FIR
+                                     │ depth cutoff
+                                     ▼
+                               surface SHM ×N (float32 mm)
+                                     ├── depth publisher ── 32FC1 m
+                                     └── point-cloud publisher ── XYZ m
 ```
 
-**9 OS processes total** — each camera_shm and raw_bridge pinned to a dedicated core via `os.sched_setaffinity`. process_node unbound (CUDA-heavy).
+Camera capture, raw DDS publication, depth inference, and surface publication
+run in separate processes. If depth and point cloud are both enabled, separate
+surface-publisher processes prevent point-cloud serialization from blocking
+depth publication.
 
-### Shared Memory Layout (header + dynamic payload)
+Camera and surface SHM use an odd/even generation protocol. Writers mark a
+generation odd while updating and even after commit; readers accept only a
+stable matching generation. Each surface result retains its source sequence
+and capture timestamp, so rates cannot be inflated by republishing the same
+depth.
 
-| Offset | Size | Field | Type |
-|--------|------|-------|------|
-| 0 | 8 | seq | uint64 — monotonic frame counter |
-| 8 | 8 | timestamp_ns | uint64 — capture time |
-| 16 | 4 | height | uint32 (from camera config) |
-| 20 | 4 | width | uint32 (from camera config) |
-| 24 | 1 | valid | uint8 — 0=writing, 1=complete |
-| 25 | 7 | (padding) | — alignment to 32 |
-| 32 | H×W×3 | data | uint8[] — BGR frame (height × width × 3) |
+## Camera reliability
 
-Lock-free single-writer/multi-reader: camera sets valid=0, writes data, increments seq, sets valid=1. Readers check seq for new frames.
+At QVGA and 60 Hz, DIGIT STM32 DMA aliasing can combine portions of adjacent
+frames into a horizontal tear without a USB/V4L2 error. `Camera` detects the
+characteristic row discontinuity, performs a stream recovery, warms up, and
+resumes with the next committed source frame. A frame-rate watchdog triggers
+the same recovery after sustained abnormal capture gaps.
 
-### STM32 Corruption Detection & Recovery
+FIR state resets automatically when recovery creates a timestamp discontinuity
+greater than `100 ms`.
 
-DIGIT sensors at QVGA (320×240) 60 Hz suffer from STM32 DMA buffer aliasing —
-top half of frame N and bottom half of frame N+1 get mixed, producing a horizontal
-tear. This issue is specific to QVGA at 60 Hz; lower resolutions or framerates are
-not affected. No USB/V4L2 health signal exists for this.
+## Calibration
 
-**Detector** (`Camera._is_corrupt`, in `digit_device.py`):
-1. `cv2.absdiff` per BGR channel → max → (H-1)×W row-diff
-2. Spike mask: each pixel 3× larger than neighbors above AND below, AND >20 absolute
-3. Modal row: row with most spike-columns. Must have >50% of W columns agreeing.
-4. Isolation ratio: peak-diff at tear row must be 10× larger than ±5-row neighborhood mean
-5. Neighbor flatness: >80% of spike-columns have neighbor diffs <15 (tear neighbors are identical copies)
+The per-sensor workflow is:
 
-**Recovery**: On corrupt detection → `_recover()` (STREAMOFF/STREAMON cycle, ~270 ms, 20 warmup frames). Resets STM32 DMA state. Corruption rate: <1%.
+1. Capture one averaged shared background.
+2. Collect 3, 5, 7, and 9 mm sphere contacts.
+3. Annotate sphere position and indentation depth.
+4. Collect representative real-world contacts.
+5. Annotate binary contact masks.
+6. Finalize deterministic train, validation, and test splits.
+7. Fine-tune decoders from the frozen Tactile Transformer.
+8. Install the selected `mixed` decoder.
 
-**FPS Watchdog**: Per-frame gap tracking in `Camera.get_image()`. If 10 consecutive
-frame gaps exceed 1.5× the expected interval (derived from configured framerate),
-triggers `_recover()` even without visible tears. Catches silent camera slowdown.
+Commands and data contracts are documented in the
+[calibration README](calibration/README.md).
 
-### Key Design Decisions
+Calibration is sensor-specific. Recalibrate after changes to the gel, optical
+surface, illumination, camera geometry, or sensor hardware.
 
-- SHM stores BGR directly — zero-copy view for raw_bridge, one copy for process_node
-- `is_corrupt` single source of truth in `digit_device.py` (not duplicated in processing_engine)
-- `connect()` uses `/dev/video*` path string, survives STREAMOFF/STREAMON V4L2 index shifts
-- Flatness gate proven contact-safe: tear flatness=0.96-1.00, contact=0.85, clean=0.75-0.88
-- Best Effort QoS for raw/depth (fire-and-forget, no ACK overhead)
+## Performance
 
-## Performance (4 cameras, 8-core machine)
+Measured on the current RTX 3050 system:
 
 | Metric | Value |
-|--------|-------|
-| Camera capture (SHM) | 47–59 fps per sensor |
-| Raw DDS | 54–60 Hz per sensor |
-| Depth DDS | ~30 Hz (CUDA model inference bound) |
-| Corruption rate | <1% |
-| Camera CPU | ~6.5% per process |
-| Raw bridge CPU | 82–90% per node (DDS discovery overhead, cosmetic) |
+|---|---:|
+| Four-sensor model compute | `15.88 ms` mean, `16.43 ms` p95 |
+| Model compute throughput | `62.97` fresh batches/s |
+| Four physical camera SHM commits | `59.68–59.72 Hz` |
+| Four physical fresh depth/point-cloud generations | `54.76–54.86 Hz` |
+| Four-sensor FIR-only cost | `0.44 ms` median, `0.88 ms` p95 |
 
-## Examples
+The current four-sensor pipeline produces approximately `54.8 Hz` fresh depth
+per sensor on this machine. The intended deployment is a higher-end GPU
+workstation.
 
-### Live Viewer
-
-```bash
-python apps/live_viewer.py --serial D21273 --mode depth
-python apps/live_viewer.py --serial D21273 --mode force_field --enable_force
-python apps/live_viewer.py --serial D21273 --outputs depth,force_field,force_vector
-```
-
-### Python API
+## Python camera API
 
 ```python
 from digit_sdk import Camera
 
 camera = Camera(serial="D21273", sensors_root="sensors")
 camera.connect()
-# Auto-detects corruption + triggers recovery + watchdog
-# Consumer just calls get_image():
-while True:
-    frame = camera.get_image()
-    if frame is not None:
-        process(frame)
+
+try:
+    while True:
+        frame = camera.get_image()
+        if frame is not None:
+            process(frame)
+finally:
+    camera.disconnect()
 ```
 
-See `apps/live_viewer.py` for full ProcessingEngine integration.
+`Camera.get_image()` includes corruption detection, recovery, and watchdog
+handling. The production depth path is provided by the ROS batch pipeline.
 
-## Sensor Calibration
+## Repository layout
 
-See [Calibration README](calibration/README.md).
+| Path | Purpose |
+|---|---|
+| `digit_sdk/` | Camera, depth model, temporal filter, geometry, and SHM protocols |
+| `ros2/` | Capture, batch inference, publishers, and launch files |
+| `calibration/` | Data collection, annotation, finalization, and decoder training |
+| `sensors/` | Per-sensor configuration, calibration datasets, and decoders |
+| `test/` | Production and regression tests |
 
 ## License
 
-Force estimation uses [Sparsh](https://github.com/facebookresearch/sparsh) models (CC-BY-NC 4.0, non-commercial). Other components retain the original gs_sdk license.
+The repository is distributed under the
+[GNU General Public License v3](LICENSE.txt). Applicable attribution and
+license notices for code derived from GS-SDK must be preserved.
+
+Sparsh model assets are licensed under
+[CC BY-NC 4.0](sparsh-main/LICENSE.md). NeuralFeels, Tactile Transformer, and
+other third-party model assets remain subject to their respective upstream
+licenses.
 
 ## References
 
-1. Huang et al., "NormalFlow," IEEE RA-L, 2024.
-2. Akhter et al., "Sparsh," CoRL, 2024. [GitHub](https://github.com/facebookresearch/sparsh)
-3. Lambeta et al., "DIGIT," IEEE RA-L, 2020. [Website](https://digit.ml/)
+1. Suresh et al., “NeuralFeels with neural fields: Visuotactile perception for in-hand manipulation,”
+   *Science Robotics*, 2024.
+   [Paper](https://www.science.org/doi/10.1126/scirobotics.adl0628) ·
+   [Code](https://github.com/facebookresearch/neuralfeels) ·
+   [Tactile Transformer](https://huggingface.co/suddhu/tactile_transformer)
+2. Huang et al., [GS-SDK](https://github.com/joehjhuang/gs_sdk).
+3. vocdex, [digit-depth](https://github.com/vocdex/digit-depth).
+4. Akhter et al., “Sparsh: Self-supervised touch representations for vision-based
+   tactile sensing,” CoRL 2024.
+   [Code](https://github.com/facebookresearch/sparsh)
+5. Lambeta et al., “DIGIT: A Novel Design for a Low-Cost Compact
+   High-Resolution Tactile Sensor with Application to In-Hand Manipulation,”
+   *IEEE RA-L*, 2020. [Project](https://digit.ml/)

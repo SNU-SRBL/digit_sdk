@@ -1,0 +1,64 @@
+{
+  "base": {
+    "filename": "dpt_real.p",
+    "repository": "suddhu/tactile_transformer",
+    "revision": "b05cfe1df2c90d3d91f8378633173b26de5a2d2c",
+    "sha256": "7ab6864c03af38def576e165fe4b1d44646e5dad2b66bf4b62ea47d894007752",
+    "size": 310969033
+  },
+  "contact_threshold_mm": 0.1,
+  "dataset_fingerprint": "68bead445d2ee99fc5df6ed7ea5ac6e5c754cd9272a480ec456f00eca1d811c5",
+  "dataset_id": "D21242",
+  "decoder_scope": "per_sensor",
+  "decoder_sha256": "644cd340e41a31be7da99e6dc60a3070745de22609b518cde79ea9ab7b5758a0",
+  "encoder_frozen": true,
+  "maximum_depth_mm": 2.2,
+  "method": "mixed",
+  "promoted_at_utc": "2026-07-28T04:39:24.123535+00:00",
+  "schema_version": 1,
+  "selected_seed": 29,
+  "serial": "D21242",
+  "test": {
+    "ball": {
+      "background_mae_mm": 0.0005462297121994197,
+      "contact_mae_mm": 0.07700304687023163,
+      "contact_rmse_mm": 0.10791163891553879,
+      "region_balanced_mae_mm": 0.038774638291215524
+    },
+    "ball_split_id": "ball",
+    "contact_threshold_mm": 0.1,
+    "dataset_fingerprint": "68bead445d2ee99fc5df6ed7ea5ac6e5c754cd9272a480ec456f00eca1d811c5",
+    "dataset_id": "D21242",
+    "decoder_sha256": "644cd340e41a31be7da99e6dc60a3070745de22609b518cde79ea9ab7b5758a0",
+    "eligible": true,
+    "evaluated_at_utc": "2026-07-28T04:37:35.460153+00:00",
+    "manual": {
+      "contact_samples": 20,
+      "false_positive_rate": 0.026551409040882885,
+      "mean_dice": 0.8630060626726532,
+      "mean_iou": 0.7712310521177823,
+      "missed_contacts": 0
+    },
+    "manual_mask_split_id": "manual_mask",
+    "method": "mixed",
+    "schema_version": 1,
+    "selected_seed": 29,
+    "serial": "D21242"
+  },
+  "validation": {
+    "ball": {
+      "background_mae_mm": 0.0006673102616332471,
+      "contact_mae_mm": 0.08349274843931198,
+      "contact_rmse_mm": 0.11171605437994003,
+      "region_balanced_mae_mm": 0.042080029350472614
+    },
+    "eligible": true,
+    "manual": {
+      "contact_samples": 20,
+      "false_positive_rate": 0.02689446954369324,
+      "mean_dice": 0.8594485236288207,
+      "mean_iou": 0.7609621611499915,
+      "missed_contacts": 0
+    }
+  }
+}

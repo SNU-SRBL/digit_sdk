@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import re
 import time
 
@@ -42,7 +43,7 @@ class Camera:
             imgw = config["imgw"]
             raw_imgh = config["raw_imgh"]
             raw_imgw = config["raw_imgw"]
-            framerate = config["framerate"]
+            framerate = config["framerate"] if framerate is None else framerate
             self.serial = serial
             self.device_type = dev_type
         else:
@@ -64,7 +65,9 @@ class Camera:
 
         # Camera device discovery
         if self.device_type and self.device_type.upper() == "DIGIT" and self.serial:
-            digit_info = DigitHandler.find_digit(self.serial)
+            digit_info = DigitHandler.find_digit(
+                self.serial, attempts=51, retry_interval=0.1
+            )
             if digit_info is None:
                 raise RuntimeError(f"Could not find DIGIT camera with serial {self.serial}")
             self.device = digit_info["dev_name"]
@@ -75,7 +78,10 @@ class Camera:
 
         # ── Corruption detection + recovery state ──
         self._recovery_sleep = 0.01
-        self._recovery_warmup = 10
+        self._recovery_retry_sleep = 0.1
+        self._recovery_started_at = None
+        self._recovery_reason = None
+        self._recovery_failures = 0
 
         # ── FPS Watchdog (gap-based, derived from configured framerate) ──
         self._wd_dt = (1.0 / self.framerate) * 1.5  # 25ms@60Hz, 50ms@30Hz
@@ -130,16 +136,37 @@ class Camera:
 
     def connect(self, verbose=True):
         """Connect to the camera using OpenCV VideoCapture (digit-interface pattern)."""
+        if self.device_type and self.device_type.upper() == "DIGIT" and self.serial:
+            stable = Path(
+                f"/dev/v4l/by-id/"
+                f"usb-Facebook_DIGIT_{self.serial}-video-index0"
+            )
+            if stable.exists():
+                self.device = str(stable)
+                self.dev_id = int(re.search(r"\d+$", os.path.realpath(stable)).group(0))
+            else:
+                digit_info = DigitHandler.find_digit(self.serial)
+                if digit_info is None:
+                    raise RuntimeError(
+                        f"Could not find DIGIT camera with serial {self.serial}"
+                    )
+                self.device = digit_info["dev_name"]
+                self.dev_id = int(re.search(r"\d+$", self.device).group(0))
         self.cap = cv2.VideoCapture(self.device)  # path string, survives index shifts
+        if not self.cap.isOpened():
+            self.cap.release()
+            raise RuntimeError(f"Could not open camera {self.device}")
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_imgw)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_imgh)
         self.cap.set(cv2.CAP_PROP_FPS, self.framerate)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
-        if verbose:
-            print("Warming up the camera...")
-        warm_up_frames = 10
-        for _ in range(warm_up_frames):
-            self.cap.read()
+        for _ in range(10):
+            ret, _ = self.cap.read()
+            if not ret:
+                self.cap.release()
+                raise RuntimeError(
+                    f"camera warm-up failed for {self.serial or self.device}"
+                )
         if verbose:
             print("Camera ready for use!")
 
@@ -151,13 +178,16 @@ class Camera:
         """
         ret, frame = self.cap.read()
         if not ret:
+            self._recover("read_failed")
+            self._wd_slow_count = 0
+            self._wd_last_time = 0.0
             return None
         frame_copied = frame.copy()
         now = time.monotonic()
 
         # ── Corruption detection + immediate recovery ──
         if self._is_corrupt(frame_copied):
-            self._recover()
+            self._recover("corrupt_frame")
             self._wd_slow_count = 0
             self._wd_last_time = now
             return None  # skip this corrupt frame, caller will retry
@@ -168,7 +198,7 @@ class Camera:
             if gap > self._wd_dt:
                 self._wd_slow_count += 1
                 if self._wd_slow_count >= self._wd_max_slow:
-                    self._recover()
+                    self._recover("sustained_low_rate")
                     self._wd_slow_count = 0
                     self._wd_last_time = 0.0  # reset after recovery
                     return None
@@ -178,16 +208,33 @@ class Camera:
 
         return frame_copied
 
-    def _recover(self):
+    def _recover(self, reason="unspecified"):
         """STREAMOFF/STREAMON cycle via release()+connect().
         
-        Resets STM32 DMA state. Minimum gap: ~270ms (~16 frames).
+        Resets STM32 DMA state. connect() discards startup frames.
         """
+        if self._recovery_started_at is None:
+            self._recovery_started_at = time.monotonic()
+            self._recovery_reason = reason
         self.release()
         time.sleep(self._recovery_sleep)
-        self.connect(verbose=False)
-        for _ in range(self._recovery_warmup):
-            self.cap.read()
+        try:
+            self.connect(verbose=False)
+        except RuntimeError:
+            self._recovery_failures += 1
+            time.sleep(self._recovery_retry_sleep)
+            return False
+        elapsed = time.monotonic() - self._recovery_started_at
+        print(
+            f"Camera {self.serial or self.device}: recovered "
+            f"reason={self._recovery_reason} elapsed={elapsed:.3f}s "
+            f"failed_attempts={self._recovery_failures}",
+            flush=True,
+        )
+        self._recovery_started_at = None
+        self._recovery_reason = None
+        self._recovery_failures = 0
+        return True
 
     def release(self):
         """Release camera resources."""
@@ -203,7 +250,7 @@ def get_camera_id(camera_name, verbose=True):
         with open(real_file, "rt") as name_file:
             name = name_file.read().rstrip()
         if camera_name in name:
-            cam_num = int(re.search("\d+$", file).group(0))
+            cam_num = int(re.search(r"\d+$", file).group(0))
             if verbose:
                 found = "FOUND!"
         else:
@@ -257,9 +304,12 @@ class DigitHandler:
         return [DigitHandler._parse(device) for device in digits]
 
     @staticmethod
-    def find_digit(serial):
-        digits = DigitHandler.list_digits()
-        for digit in digits:
-            if digit["serial"] == serial:
-                return digit
+    def find_digit(serial, attempts=1, retry_interval=0.0):
+        for attempt in range(attempts):
+            digits = DigitHandler.list_digits()
+            for digit in digits:
+                if digit["serial"] == serial:
+                    return digit
+            if attempt + 1 < attempts:
+                time.sleep(retry_interval)
         return None

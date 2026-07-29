@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DIGIT ball annotation</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div><small>DIGIT calibration</small><h1>Ball contact annotation</h1></div>
+    <label>Annotator <input id="annotator" placeholder="required to save"></label>
+  </header>
+  <main>
+    <aside>
+      <label class="stack">Contact radius <output id="radius-value"></output>
+        <input id="radius" type="range" min="1" step="0.25">
+      </label>
+      <dl>
+        <dt>Ball diameter</dt><dd id="diameter"></dd>
+        <dt>Peak depth</dt><dd id="depth"></dd>
+        <dt>Center</dt><dd id="center"></dd>
+      </dl>
+      <div class="row"><button id="undo">Undo</button><button id="redo">Redo</button></div>
+      <label class="stack">Zoom <output id="zoom-value">200%</output>
+        <input id="zoom" type="range" min="100" max="500" step="25" value="200">
+      </label>
+      <label class="check"><input id="difference" type="checkbox"> Background difference</label>
+      <p class="help">Drag to move the circle. Use the radius slider, mouse wheel, or +/- keys. Arrow keys move one pixel.</p>
+    </aside>
+    <section class="workspace">
+      <nav><button id="previous">← Previous</button><div><strong id="sample-id">Loading…</strong><span id="sample-meta"></span></div><button id="next">Next →</button></nav>
+      <div class="canvas-wrap"><canvas id="view"></canvas></div>
+      <footer><span id="status">Loading queue…</span><span id="queue"></span><button id="reject" class="danger">Reject sample</button><button id="save" class="primary">Save annotation</button></footer>
+    </section>
+  </main>
+  <script src="/app.js?v=replacement-v1"></script>
+</body>
+</html>

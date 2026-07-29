@@ -1,67 +1,43 @@
-"""
-Digit SDK: Visual-Tactile Sensor Processing
+"""DIGIT camera capture and calibrated metric-depth runtime.
 
-This package provides depth reconstruction and force estimation for vision-based
-tactile sensors (DIGIT). It includes both low-level estimators and high-level
-streaming interfaces.
-
-Main Classes:
-- TactileProcessor: Unified processor with selective output computation
-- Camera: Synchronous DIGIT camera capture
-- DepthEstimator: MLP-based depth reconstruction from tactile images
-- ForceEstimator: Sparsh ViT-based force estimation from temporal pairs
-- TemporalBuffer: Circular buffer for temporal frame management
-
-Example:
-    >>> from digit_sdk import TactileProcessor
-    >>> processor = TactileProcessor(model_path="model.pth", enable_depth=True)
-    >>> processor.load_background(bg_image)
-    >>> result = processor.process(image=frame, outputs=['depth', 'pointcloud'])
-    >>> # result = {'depth': ..., 'pointcloud': ...}
+Public exports are lazy so camera and ROS publisher processes do not import the
+Torch/TIMM model stack owned exclusively by the pipeline process.
 """
 
-__version__ = "1.0.0"
+from importlib import import_module
 
-# Low-level processors
-from .tactile_processor import TactileProcessor
-from .processing_engine import ProcessingEngine
-from .depth_estimator import DepthEstimator
-from .force_estimator import ForceEstimator
 
-# Device interface
-from .camera import Camera
-
-# Utilities
-from .temporal_buffer import TemporalBuffer
-
-# Visualization
-from .viz_utils import (
-    plot_gradients,
-    force_field_to_rgb,
-    visualize_force_field,
-    visualize_force_vector
-)
-
+__version__ = "2.0.0"
 __all__ = [
-    # Main processors
-    "TactileProcessor",
-
-    # Processing engine
-    "ProcessingEngine",
-
-    # Camera
     "Camera",
-
-    # Estimators
     "DepthEstimator",
-    "ForceEstimator",
-
-    # Utilities
-    "TemporalBuffer",
-
-    # Visualization
-    "plot_gradients",
-    "force_field_to_rgb",
-    "visualize_force_field",
-    "visualize_force_vector",
+    "DepthFrame",
+    "DepthInput",
+    "DepthResult",
+    "ProcessingEngine",
+    "make_depth_result",
+    "validate_depth_raw_mm",
+    "validate_depth_result",
 ]
+
+_EXPORTS = {
+    "Camera": (".camera", "Camera"),
+    "DepthEstimator": (".depth", "DepthEstimator"),
+    "DepthInput": (".depth", "DepthInput"),
+    "DepthFrame": (".processing_engine", "DepthFrame"),
+    "ProcessingEngine": (".processing_engine", "ProcessingEngine"),
+    "DepthResult": (".depth_contract", "DepthResult"),
+    "make_depth_result": (".depth_contract", "make_depth_result"),
+    "validate_depth_raw_mm": (".depth_contract", "validate_depth_raw_mm"),
+    "validate_depth_result": (".depth_contract", "validate_depth_result"),
+}
+
+
+def __getattr__(name):
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value

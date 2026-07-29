@@ -1,454 +1,320 @@
-"""
-ProcessingEngine: pure-Python tactile sensor processing pipeline.
+"""Multi-sensor production depth scheduling.
 
-Reads raw frames from shared memory (written by camera_shm), runs
-background collection, and processes depth/force asynchronously via
-worker threads.  One worker thread per sensor decouples GPU processing
-from the ROS publish loop, so tail GPU latency never blocks the timer.
-
-Typical usage::
-
-    engine = ProcessingEngine(
-        serials=["D21275"],
-        sensors_root="/path/to/sensors",
-        model_device="cuda",
-        outputs=["depth"],
-    )
-    engine.collect_background("D21275")
-    engine.start_workers()
-
-    # In timer callback:
-    frame = engine.read_frame("D21275")
-    if frame is not None:
-        engine.submit_frame("D21275", frame)
-    result = engine.get_latest_result("D21275")
-    if result:
-        publish(result)
+Camera capture remains isolated in one process per sensor.  This engine reads
+stable camera snapshots, keeps only each sensor's latest frame, executes one
+shared-encoder batch, and exposes the latest metric result per sensor.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
 import logging
-import pathlib
+from multiprocessing import shared_memory
+from pathlib import Path
 import threading
 import time
-from multiprocessing import shared_memory
-from typing import Dict, List, Optional
+from typing import Dict, Mapping, Optional, Sequence
 
-import cv2
 import numpy as np
-import torch
 
-from .tactile_processor import TactileProcessor
-from .utils import load_config
-from .viz_utils import force_field_to_rgb
+from .depth import DepthEstimator, DepthInput
+from .shm_protocol import (
+    CameraFrameSnapshot,
+    open_shared_memory,
+    read_camera_frame,
+)
+from .temporal import NeuralFeelsFIR, PersistenceCutoff
+
 
 logger = logging.getLogger(__name__)
+_TEMPORAL_RESET_GAP_NS = 100_000_000
 
-BG_COLLECTION_FRAMES = 10
+
+@dataclass(frozen=True)
+class DepthFrame:
+    """One completed result tied to its source camera frame."""
+
+    source_sequence: int
+    timestamp_ns: int
+    depth_mm: np.ndarray
+
+
+@dataclass(frozen=True)
+class _PendingDepthInput:
+    source_sequence: int
+    timestamp_ns: int
+    prepared: DepthInput
 
 
 class ProcessingEngine:
-    """Manages SHM reading, background collection, and asynchronous
-    depth/force processing via worker threads.  Decouples GPU processing
-    from the publish loop."""
+    """Own the production estimator and latest-frame batch scheduler."""
 
     def __init__(
         self,
-        serials: List[str],
-        sensors_root: str,
+        serials: Sequence[str],
+        sensors_root: str | Path,
         model_device: str = "cuda",
-        enable_force: bool = False,
-        temporal_stride: int = 5,
-        outputs: Optional[List[str]] = None,
-        use_mask: bool = True,
-        refine_mask: bool = True,
-        relative: bool = True,
-        relative_scale: float = 0.5,
-        mask_only_pointcloud: bool = False,
-        point_sample_mm: float = 0.0,
-        contact_mode: str = "standard",
-        force_field_scale: float = 1.0,
-        force_field_baseline: bool = False,
+        depth_cutoff_mm: float = 0.1,
+        shm_connect_timeout: float = 10.0,
     ):
-        self._serials = list(serials)
-        self._model_device = model_device
-        self._force_field_scale = force_field_scale
-        self._force_field_baseline = force_field_baseline
-        sensors_root = str(sensors_root)
-        root = pathlib.Path(sensors_root)
+        if not serials:
+            raise ValueError("at least one sensor serial is required")
+        if len(set(serials)) != len(serials):
+            raise ValueError("sensor serials must be unique")
+        depth_cutoff_mm = float(depth_cutoff_mm)
+        if not np.isfinite(depth_cutoff_mm) or depth_cutoff_mm < 0:
+            raise ValueError("depth_cutoff_mm must be finite and non-negative")
 
-        # Resolve outputs
-        if outputs:
-            self._outputs = list(outputs)
-        else:
-            self._outputs = ["depth"]
-
-        self._depth_kwargs = {
-            "use_mask": use_mask,
-            "refine_mask": refine_mask,
-            "relative": relative,
-            "relative_scale": relative_scale,
-            "mask_only_pointcloud": mask_only_pointcloud,
-            "point_sample_mm": point_sample_mm,
-        }
-
-        # Per-sensor state
+        self._configured_serials = tuple(serials)
+        self._depth_cutoff_mm = depth_cutoff_mm
         self._shms: Dict[str, shared_memory.SharedMemory] = {}
-        self._last_seqs: Dict[str, int] = {}
-        self._processors: Dict[str, TactileProcessor] = {}
-        self._ppmm: Dict[str, float] = {}
-        self._streams: Dict[str, torch.cuda.Stream] = {}
+        self._last_read_sequences: Dict[str, int] = {}
+        self._connect_shms(shm_connect_timeout)
+        self._serials = tuple(
+            serial for serial in self._configured_serials if serial in self._shms
+        )
+        self._estimator = (
+            DepthEstimator(self._serials, sensors_root, model_device)
+            if self._serials else None
+        )
 
-        # Worker thread state
+        self._condition = threading.Condition()
         self._running = False
-        self._worker_threads: Dict[str, threading.Thread] = {}
-        self._lock = threading.Lock()
-        self._latest_results: Dict[str, dict] = {}
-        self._queued_frames: Dict[str, Optional[np.ndarray]] = {}
-        self._queued_seqs: Dict[str, int] = {}
-        self._processed_seqs: Dict[str, int] = {}
-
-        # Connect to each sensor and initialize
-        for serial in self._serials:
-            self._connect_sensor(serial, root)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self._worker: Optional[threading.Thread] = None
+        self._pending: Dict[str, _PendingDepthInput] = {}
+        self._processed_sequences: Dict[str, int] = {
+            serial: -1 for serial in self._serials
+        }
+        self._latest_results: Dict[str, DepthFrame] = {}
+        self._latest_inputs: Dict[str, _PendingDepthInput] = {}
+        self._temporal_filters = {
+            serial: NeuralFeelsFIR() for serial in self._serials
+        }
+        self._persistence_filters = {
+            serial: PersistenceCutoff(self._depth_cutoff_mm)
+            for serial in self._serials
+            if self._depth_cutoff_mm > 0
+        }
+        self._temporal_timestamps_ns: Dict[str, int] = {}
 
     @property
-    def serials(self) -> List[str]:
+    def serials(self):
         return list(self._serials)
 
-    @property
-    def outputs(self) -> List[str]:
-        return list(self._outputs)
-
-    def read_frame(self, serial: str) -> Optional[np.ndarray]:
-        """Read latest frame from shared memory for *serial*.
-        Returns BGR np.ndarray (h, w, 3) uint8, or None if no new frame."""
+    def read_frame(self, serial: str) -> Optional[CameraFrameSnapshot]:
+        """Return the latest unseen stable camera snapshot."""
         shm = self._shms.get(serial)
         if shm is None:
             return None
-        buf = shm.buf
-        valid = int(buf[24])
-        if not valid:
+        snapshot = read_camera_frame(shm.buf)
+        if snapshot is None:
             return None
-        seq = int.from_bytes(buf[0:8], "little")
-        if seq == self._last_seqs.get(serial, -1):
+        if snapshot.sequence == self._last_read_sequences.get(serial, -1):
             return None
-        self._last_seqs[serial] = seq
-        h = int.from_bytes(buf[16:20], "little")
-        w = int.from_bytes(buf[20:24], "little")
-        if h == 0 or w == 0:
-            return None
-        bgr = np.frombuffer(
-            buf[32:32 + h * w * 3], dtype=np.uint8).reshape(h, w, 3)
-        return bgr.copy()
+        self._last_read_sequences[serial] = snapshot.sequence
+        return snapshot
 
-    def collect_background(self, serial: str, timeout: float = 15.0,
-                           bg_frames: int = BG_COLLECTION_FRAMES) -> bool:
-        """Collect background frames for *serial* from SHM and load them
-        into the TactileProcessor.  Call *before* start_workers().
+    def read_available_frames(self) -> Dict[str, CameraFrameSnapshot]:
+        """Read at most one latest unseen frame from every active sensor."""
+        snapshots = {}
+        for serial in self._serials:
+            snapshot = self.read_frame(serial)
+            if snapshot is not None:
+                snapshots[serial] = snapshot
+        return snapshots
 
-        Returns True on success."""
-        collected: List[np.ndarray] = []
-        deadline = time.monotonic() + timeout
-        while len(collected) < bg_frames:
-            if time.monotonic() > deadline:
-                logger.warning(
-                    f"{serial}: Background collection timeout "
-                    f"({len(collected)}/{bg_frames})")
-                break
-            frame = self.read_frame(serial)
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            collected.append(frame)
-        if not collected:
-            logger.error(f"{serial}: Failed to collect background")
-            return False
-        bg_image = np.mean(collected, axis=0).astype(np.uint8)
-        self._processors[serial].load_background(bg_image)
-        logger.info(
-            f"{serial}: Background collected "
-            f"({len(collected)} clean frames)")
-        return True
+    def submit_frames(
+        self, snapshots: Mapping[str, CameraFrameSnapshot]
+    ) -> None:
+        """Atomically replace pending frames; never queue stale history."""
+        unknown = set(snapshots) - set(self._serials)
+        if unknown:
+            raise KeyError(f"inactive sensor serials: {sorted(unknown)}")
+        prepared = {
+            serial: _PendingDepthInput(
+                source_sequence=snapshot.sequence,
+                timestamp_ns=snapshot.timestamp_ns,
+                prepared=self._estimator.prepare(snapshot.image),
+            )
+            for serial, snapshot in snapshots.items()
+        }
+        with self._condition:
+            for serial, item in prepared.items():
+                if item.source_sequence > self._processed_sequences[serial]:
+                    self._pending[serial] = item
+            self._condition.notify()
+
+    def submit_frame(
+        self,
+        serial: str,
+        frame: np.ndarray,
+        *,
+        source_sequence: Optional[int] = None,
+        timestamp_ns: Optional[int] = None,
+    ) -> None:
+        """Submit one frame while retaining source identity when provided."""
+        if source_sequence is None:
+            source_sequence = self._processed_sequences.get(serial, -1) + 1
+        if timestamp_ns is None:
+            timestamp_ns = time.time_ns()
+        self.submit_frames({
+            serial: CameraFrameSnapshot(source_sequence, timestamp_ns, frame)
+        })
 
     def start_workers(self) -> None:
-        """Start one worker thread per active sensor.
-        Workers process frames asynchronously via processor.process().
-        GPU work is queued on per-sensor CUDA streams for concurrency."""
-        with self._lock:
+        """Start the single batch worker."""
+        with self._condition:
             if self._running:
                 return
+            if self._estimator is None:
+                raise RuntimeError("no active sensors")
             self._running = True
-            for serial in self._serials:
-                if serial not in self._processors:
-                    continue
-                self._queued_frames[serial] = None
-                self._queued_seqs[serial] = 0
-                self._processed_seqs[serial] = 0
-                self._latest_results[serial] = {}
-                t = threading.Thread(
-                    target=self._worker_loop,
-                    args=(serial,),
-                    daemon=True,
-                    name=f"engine-{serial}",
-                )
-                self._worker_threads[serial] = t
-                t.start()
-        logger.info(f"Started {len(self._worker_threads)} worker threads")
-
-    def submit_frame(self, serial: str, frame: np.ndarray) -> None:
-        """Submit a frame for asynchronous processing.
-        Non-blocking — the worker thread picks it up."""
-        with self._lock:
-            self._queued_frames[serial] = frame
-            self._queued_seqs[serial] += 1
-
-    def get_latest_result(self, serial: str) -> Optional[dict]:
-        """Return the latest processed result for *serial*, or None.
-        Non-blocking."""
-        with self._lock:
-            result = self._latest_results.get(serial)
-        return result if result else None
-
-    def process_frame_sync(self, serial: str, frame: np.ndarray) -> dict:
-        """Process a single frame synchronously (bypasses worker threads).
-        Returns dict with processed outputs, or empty dict on failure."""
-        processor = self._processors.get(serial)
-        if processor is None:
-            return {}
-        stream = self._streams.get(serial)
-        with torch.cuda.stream(stream):
-            result = processor.process(
-                image=frame,
-                outputs=self._outputs,
-                ppmm=self._ppmm.get(serial, 0.0),
-                **self._depth_kwargs,
+            self._worker = threading.Thread(
+                target=self._worker_loop,
+                daemon=True,
+                name="depth-batch-worker",
             )
-        return result if result else {}
+            self._worker.start()
 
-    def canonicalize_force_field(
-        self,
-        result: dict,
-        frame: Optional[np.ndarray] = None,
-        serial: str = "",
-    ) -> dict:
-        """Apply force_field scaling and recompute pointcloud colors/forces.
-        Works in-place and returns the modified result dict."""
-        if (result is None or "force_field" not in result
-                or result["force_field"] is None):
-            return result
-        ff = result["force_field"]
-        try:
-            normal_arr = np.asarray(ff["normal"]).astype(np.float32)
-            shear_arr = np.asarray(ff["shear"]).astype(np.float32)
-        except (KeyError, TypeError, ValueError):
-            return result
+    def get_latest_result(self, serial: str) -> Optional[DepthFrame]:
+        """Return the newest completed immutable result, if available."""
+        with self._condition:
+            return self._latest_results.get(serial)
 
-        normal_vis = normal_arr.astype(np.float64)
-        shear_vis = shear_arr.astype(np.float64)
-
-        if self._force_field_scale != 1.0:
-            s = float(self._force_field_scale)
-            normal_vis = normal_vis * s
-            shear_vis = shear_vis * s
-
-        normal_vis = np.clip(normal_vis, 0.0, 1.0).astype(np.float32)
-        shear_vis = np.clip(shear_vis, -1.0, 1.0).astype(np.float32)
-
-        ff["normal"] = normal_vis
-        ff["shear"] = shear_vis
-        result["force_field"] = ff
-
-        # Recompute pointcloud colors / forces
-        if frame is not None:
-            try:
-                pc = result.get("pointcloud")
-                if pc is not None:
-                    force_rgb = force_field_to_rgb(
-                        normal_vis, shear_vis
-                    )
-                    th, tw = frame.shape[0], frame.shape[1]
-                    fh, fw = force_rgb.shape[:2]
-                    if (fh, fw) != (th, tw):
-                        force_rgb = cv2.resize(
-                            force_rgb, (tw, th),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                    colors_flat = (
-                        force_rgb.reshape(-1, 3) / 255.0
-                    )
-                    mask = result.get("mask")
-                    if (
-                        mask is not None
-                        and pc.shape[0] != (th * tw)
-                    ):
-                        mask_flat = mask.ravel()
-                        if mask_flat.shape[0] == th * tw:
-                            colors_flat = colors_flat[mask_flat]
-                    result["pointcloud_colors"] = colors_flat
-
-                    fx_img = shear_vis[..., 0]
-                    fy_img = shear_vis[..., 1]
-                    fz_img = normal_vis
-                    if (fx_img.shape[0], fx_img.shape[1]) != (th, tw):
-                        fx_img = cv2.resize(
-                            fx_img, (tw, th),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                        fy_img = cv2.resize(
-                            fy_img, (tw, th),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                        fz_img = cv2.resize(
-                            fz_img, (tw, th),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                    fx_flat = fx_img.reshape(-1)
-                    fy_flat = fy_img.reshape(-1)
-                    fz_flat = fz_img.reshape(-1)
-                    if (
-                        mask is not None
-                        and pc.shape[0] != (th * tw)
-                    ):
-                        mask_flat = mask.ravel()
-                        if mask_flat.shape[0] == th * tw:
-                            fx_flat = fx_flat[mask_flat]
-                            fy_flat = fy_flat[mask_flat]
-                            fz_flat = fz_flat[mask_flat]
-                    result["pointcloud_forces"] = np.stack(
-                        [fx_flat, fy_flat, fz_flat], axis=1
-                    )
-            except Exception:
-                logger.warning(
-                    f"{serial}: Failed to recompute "
-                    "pointcloud colors/forces",
-                    exc_info=True,
-                )
-        return result
+    def process_frames_sync(
+        self, frames: Mapping[str, np.ndarray]
+    ) -> Dict[str, DepthFrame]:
+        """Synchronous inference helper for tests and diagnostics."""
+        if self._estimator is None:
+            return {}
+        timestamp_ns = time.time_ns()
+        raw_depths = self._estimator.estimate_batch(frames)
+        return {
+            serial: self._make_result(
+                serial, depth, source_sequence=0, timestamp_ns=timestamp_ns
+            )
+            for serial, depth in raw_depths.items()
+        }
 
     def shutdown(self) -> None:
-        """Stop all worker threads and close SHM handles."""
-        with self._lock:
+        with self._condition:
             self._running = False
-        for t in self._worker_threads.values():
-            t.join(timeout=2.0)
-        self._worker_threads.clear()
+            self._condition.notify_all()
+        if self._worker is not None:
+            self._worker.join(timeout=2.0)
+            self._worker = None
         for shm in self._shms.values():
             shm.close()
-        self._processors.clear()
         self._shms.clear()
 
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *_args):
         self.shutdown()
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _worker_loop(self, serial: str) -> None:
-        """Background processing loop for one sensor.
-        Waits for new frames, processes via processor.process(),
-        stores results for get_latest_result()."""
-        processor = self._processors[serial]
-        stream = self._streams.get(serial)
-        outputs = self._outputs
-        ppmm = self._ppmm.get(serial, 0.0)
-        depth_kwargs = self._depth_kwargs.copy()
-
-        while True:
-            with self._lock:
-                if not self._running:
-                    break
-                frame = self._queued_frames.get(serial)
-                qseq = self._queued_seqs.get(serial, 0)
-                pseq = self._processed_seqs.get(serial, 0)
-            if frame is not None and qseq > pseq:
+    def _connect_shms(self, timeout: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        remaining = set(self._configured_serials)
+        while remaining:
+            for serial in tuple(remaining):
                 try:
-                    with torch.cuda.stream(stream):
-                        result = processor.process(
-                            image=frame,
-                            outputs=outputs,
-                            ppmm=ppmm,
-                            **depth_kwargs,
-                        )
-                    with self._lock:
-                        if result:
-                            self._latest_results[serial] = result
-                        self._processed_seqs[serial] = qseq
-                except Exception:
-                    logger.warning(
-                        f"{serial}: Worker processing error",
-                        exc_info=True,
+                    self._shms[serial] = open_shared_memory(
+                        f"tactile_{serial}"
                     )
-            else:
-                time.sleep(0.001)
-
-    def _connect_sensor(self, serial: str, root: pathlib.Path) -> None:
-        """Connect to SHM, load config, create TactileProcessor."""
-        shm_name = f"tactile_{serial}"
-        shm = None
-        for _ in range(100):
-            try:
-                shm = shared_memory.SharedMemory(
-                    name=shm_name, create=False)
+                    self._last_read_sequences[serial] = -1
+                    remaining.remove(serial)
+                except FileNotFoundError:
+                    pass
+            if not remaining or time.monotonic() >= deadline:
                 break
-            except FileNotFoundError:
-                time.sleep(0.1)
-        if shm is None:
-            logger.error(f"SHM '{shm_name}' not found after 10s -- skipping")
-            return
-        self._shms[serial] = shm
-        self._last_seqs[serial] = -1
+            time.sleep(0.05)
+        for serial in sorted(remaining):
+            logger.warning("camera SHM unavailable; skipping sensor %s", serial)
 
-        # Config
-        config_path = str(root / serial / f"{serial}.yaml")
-        config = load_config(config_path=config_path)
-        ppmm = config.get("ppmm", 0.0)
-        self._ppmm[serial] = ppmm
+    def _worker_loop(self) -> None:
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: not self._running or self._pending)
+                if not self._running:
+                    return
+                snapshots = self._pending
+                self._pending = {}
 
-        # Model paths
-        model_path = str(root / serial / "model" / "nnmodel.pth")
-        force_encoder_path = str(
-            root.parent / "models" / "sparsh_dino_base_encoder.ckpt")
-        force_decoder_path = str(
-            root.parent / "models" / "sparsh_digit_forcefield_decoder.pth")
+            inference_batch = self._build_inference_batch(snapshots)
+            if inference_batch is None:
+                continue
 
-        force_cfg = config.get("force", {}) or {}
-        force_vector_scale_cfg = force_cfg.get(
-            "force_vector_scale", [1.0, 1.0, 1.0])
-        force_enabled_yaml = force_cfg.get("enable_force", False)
+            try:
+                raw_depths = self._estimator.estimate_prepared_batch(inference_batch)
+            except Exception:
+                logger.exception("depth batch inference failed")
+                continue
 
-        depth_outputs = {"depth", "gradient", "pointcloud", "mask"}
-        force_outputs = {"force_field", "force_vector"}
-        enable_depth = any(o in depth_outputs for o in self._outputs)
-        enable_force_est = force_enabled_yaml or any(o in force_outputs for o in self._outputs)
+            completed = {
+                serial: self._make_result(
+                    serial,
+                    raw_depths[serial],
+                    source_sequence=item.source_sequence,
+                    timestamp_ns=item.timestamp_ns,
+                )
+                for serial, item in snapshots.items()
+                if serial in raw_depths
+            }
+            with self._condition:
+                for serial, result in completed.items():
+                    if result.source_sequence > self._processed_sequences[serial]:
+                        self._processed_sequences[serial] = result.source_sequence
+                        self._latest_results[serial] = result
 
-        self._processors[serial] = TactileProcessor(
-            model_path=model_path if enable_depth else None,
-            enable_depth=enable_depth,
-            enable_force=enable_force_est,
-            force_encoder_path=force_encoder_path,
-            force_decoder_path=force_decoder_path,
-            temporal_stride=5,
-            bg_offset=0.5,
-            device=self._model_device,
-            ppmm=ppmm,
-            contact_mode="standard",
-            force_field_baseline=self._force_field_baseline,
-            force_vector_scale=force_vector_scale_cfg,
+    def _build_inference_batch(
+        self,
+        snapshots: Dict[str, _PendingDepthInput],
+    ) -> Optional[Dict[str, DepthInput]]:
+        """Return one fixed-size batch, reusing only internal stale inputs."""
+        self._latest_inputs.update(snapshots)
+        if any(serial not in self._latest_inputs for serial in self._serials):
+            return None
+        return {
+            serial: self._latest_inputs[serial].prepared
+            for serial in self._serials
+        }
+
+    def _make_result(
+        self,
+        serial: str,
+        depth_raw_mm: np.ndarray,
+        *,
+        source_sequence: int,
+        timestamp_ns: int,
+    ) -> DepthFrame:
+        previous_timestamp_ns = self._temporal_timestamps_ns.get(serial)
+        if (
+            previous_timestamp_ns is not None
+            and (
+                timestamp_ns <= previous_timestamp_ns
+                or timestamp_ns - previous_timestamp_ns
+                > _TEMPORAL_RESET_GAP_NS
+            )
+        ):
+            self._temporal_filters[serial].reset()
+            persistence = self._persistence_filters.get(serial)
+            if persistence is not None:
+                persistence.reset()
+        self._temporal_timestamps_ns[serial] = timestamp_ns
+        depth_filtered_mm = self._temporal_filters[serial](depth_raw_mm)
+        persistence = self._persistence_filters.get(serial)
+        if persistence is not None:
+            depth_filtered_mm = persistence(depth_filtered_mm)
+        return DepthFrame(
+            source_sequence=source_sequence,
+            timestamp_ns=timestamp_ns,
+            depth_mm=depth_filtered_mm,
         )
-
-        logger.info(f"Sensor {serial} initialized")
-        self._streams[serial] = torch.cuda.Stream()
 
     def __repr__(self) -> str:
         return (
-            f"ProcessingEngine(serials={self._serials}, "
-            f"outputs={self._outputs})"
+            f"ProcessingEngine(serials={list(self._serials)!r}, "
+            f"depth_cutoff_mm={self._depth_cutoff_mm}, "
+            "temporal=neuralfeels_fir_5+persistence_2_of_3)"
         )

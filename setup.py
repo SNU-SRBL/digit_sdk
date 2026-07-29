@@ -3,10 +3,14 @@ from setuptools import setup, find_packages
 setup(
     name="digit_sdk",
     version="0.1.0",
-    description="SDK for visual-tactile sensors usage, reconstruction, and calibration. Edited from https://github.com/joehjhuang/gs_sdk",
+    description="SDK for DIGIT tactile depth, point-cloud, and force estimation",
     author="Byung-Hyun Song",
     author_email="bh.song@snu.ac.kr",
     packages=find_packages(),
+    package_data={
+        "calibration.annotate_contact": ["static/*"],
+        "calibration.annotate_ball": ["static/*"],
+    },
     install_requires=[
         "pillow==10.0.0",
         "numpy==1.26.4",
@@ -38,11 +42,17 @@ setup(
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [
-            "digit-collect=digit_sdk.calibration.collect_data:collect_data",
-            "digit-label=digit_sdk.calibration.label_data:label_data",
-            "digit-prepare=digit_sdk.calibration.prepare_data:prepare_data",
-            "digit-train=digit_sdk.calibration.train_model:train_model",
-            "digit-test=digit_sdk.calibration.test_model:test_model",
+            "digit-annotate-contact=calibration.annotate_contact.server:main",
+            "digit-annotate-ball=calibration.annotate_ball.server:main",
+            "digit-collect-background=calibration.collect_background:main",
+            "digit-collect-ball=calibration.collect_ball:main",
+            "digit-collect-manual=calibration.collect_manual_contacts:main",
+            "digit-finalize-calibration=calibration.finalize_dataset:main",
+            "digit-evaluate-decoder=calibration.evaluate_decoder:main",
+            "digit-promote-decoder=calibration.promote_decoder:main",
+            "digit-promote-calibration=calibration.promote_dataset:main",
+            "digit-train-decoder=calibration.train_decoder:main",
+            "digit-validate-dataset=calibration.validate_dataset:main",
         ],
     },
     classifiers=[

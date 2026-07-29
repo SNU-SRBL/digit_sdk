@@ -4,24 +4,23 @@
 One process per sensor — independent Python GIL for each camera.
 Launched by multi_sensor_tactile_streamer.launch.py with serial:=... param.
 """
+import array
 import os
 import time
-from multiprocessing import shared_memory
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
-import numpy as np
+
+from digit_sdk.shm_protocol import open_shared_memory, read_camera_frame
 
 _BE_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
 )
-
-SHM_HEADER = 32
 
 
 class RawPublisher(Node):
@@ -61,8 +60,7 @@ class RawPublisher(Node):
         self._shm = None
         for _ in range(100):
             try:
-                self._shm = shared_memory.SharedMemory(
-                    name=f'tactile_{serial}', create=False)
+                self._shm = open_shared_memory(f'tactile_{serial}')
                 break
             except FileNotFoundError:
                 time.sleep(0.1)
@@ -71,6 +69,7 @@ class RawPublisher(Node):
             return
 
         self._serial = serial
+        self._last_seq = -1
 
         # Publisher
         self._pub = self.create_publisher(
@@ -85,20 +84,12 @@ class RawPublisher(Node):
         """Read latest frame from SHM, publish as BGR Image."""
         if self._shm is None:
             return
-        buf = self._shm.buf
-
-        if not buf[24]:
+        snapshot = read_camera_frame(self._shm.buf)
+        if snapshot is None or snapshot.sequence == self._last_seq:
             return
-
-        h = int.from_bytes(buf[16:20], 'little')
-        w = int.from_bytes(buf[20:24], 'little')
-        if h == 0 or w == 0:
-            return
-
-        bgr = np.frombuffer(
-            buf[SHM_HEADER:SHM_HEADER + h * w * 3],
-            dtype=np.uint8,
-        ).reshape(h, w, 3)
+        self._last_seq = snapshot.sequence
+        bgr = snapshot.image
+        h, w = bgr.shape[:2]
 
         msg = Image()
         msg.height = h
@@ -106,9 +97,11 @@ class RawPublisher(Node):
         msg.encoding = 'bgr8'
         msg.is_bigendian = False
         msg.step = w * 3
-        msg.data = bgr.tobytes()
+        msg.data = array.array('B', bgr.tobytes())
         msg.header.frame_id = f'tactile_{self._serial}_optical_frame'
-        msg.header.stamp = self.get_clock().now().to_msg()
+        seconds, nanoseconds = divmod(snapshot.timestamp_ns, 1_000_000_000)
+        msg.header.stamp.sec = seconds
+        msg.header.stamp.nanosec = nanoseconds
         self._pub.publish(msg)
 
     def destroy_node(self):

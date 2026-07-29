@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DIGIT contact annotation</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">DIGIT calibration</p>
+      <h1>Contact mask annotation</h1>
+    </div>
+    <div class="identity">
+      <label for="annotator">Annotator</label>
+      <input id="annotator" autocomplete="name" placeholder="required to save">
+    </div>
+  </header>
+
+  <main>
+    <aside class="panel tools">
+      <section>
+        <span class="section-label">Tool</span>
+        <div class="segmented" id="tools">
+          <button data-tool="brush" class="active" title="Brush (B)">Brush</button>
+          <button data-tool="polygon" title="Polygon (P)">Polygon</button>
+          <button data-tool="eraser" title="Eraser (E)">Eraser</button>
+        </div>
+      </section>
+
+      <section>
+        <label class="range-label" for="brush-size">
+          <span>Brush size</span><output id="brush-size-value">18 px</output>
+        </label>
+        <input id="brush-size" type="range" min="2" max="80" value="18">
+      </section>
+
+      <section class="button-grid">
+        <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="redo" title="Redo (Ctrl+Y)">Redo</button>
+      </section>
+
+      <section>
+        <label class="range-label" for="opacity">
+          <span>Mask opacity</span><output id="opacity-value">45%</output>
+        </label>
+        <input id="opacity" type="range" min="0" max="100" value="45">
+      </section>
+
+      <section>
+        <label class="range-label" for="zoom">
+          <span>Zoom</span><output id="zoom-value">200%</output>
+        </label>
+        <input id="zoom" type="range" min="100" max="500" step="25" value="200">
+      </section>
+
+      <section class="check-row">
+        <input id="difference" type="checkbox">
+        <label for="difference">Background difference</label>
+      </section>
+
+      <section class="instructions">
+        <span class="section-label">Polygon</span>
+        <p>Click vertices. Double-click or press Enter to fill. Escape cancels.</p>
+      </section>
+    </aside>
+
+    <section class="workspace">
+      <div class="sample-bar">
+        <button id="previous" title="Previous (←)">← Previous</button>
+        <div class="sample-title">
+          <strong id="sample-id">Loading…</strong>
+          <span id="sample-meta"></span>
+        </div>
+        <button id="next" title="Next (→)">Next →</button>
+      </div>
+
+      <div id="canvas-scroll" class="canvas-scroll">
+        <canvas id="view"></canvas>
+      </div>
+
+      <div class="status-bar">
+        <span id="save-status" data-state="idle">Loading queue…</span>
+        <span id="queue-status"></span>
+        <button id="save" class="primary">Save mask</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

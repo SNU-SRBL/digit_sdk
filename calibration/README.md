@@ -1,104 +1,301 @@
-## Sensor Calibration
-Refer to the original [gs-sdk/calibration](https://github.com/joehjhuang/gs_sdk/tree/master/calibration) for detailed explanation.
+# Sensor Calibration
 
-### Preperation
-For a sensor with {serial} number, you need a {serial}.yaml inside sensors/{serial}/{serial}.yaml
+Calibration trains one metric-depth decoder per DIGIT sensor. The shared
+Tactile Transformer encoder is frozen; ball indentation provides metric depth
+and manual masks provide real-contact support.
 
-#### (Optional) Adding diffuser to LED
-Due to varience of the acrylic window's side surface roughness, sharpness of the LED's are different. For sensors that have too much sharpness, applying Scotch Magic Tape to the side will smooth the light.
+## Pixel-per-millimetre measurement
 
-<img src="../assets/magic_tape.jpg" width="150"/>
+Borrowed from
+[digit-depth/scripts/mm_to_pix.py](https://github.com/vocdex/digit-depth/blob/main/scripts/mm_to_pix.py).
 
-### Pixel-per-millimeter Measurement
-Borrowed from [digit-depth/scripts/mm_to_pix.py](https://github.com/vocdex/digit-depth/blob/main/scripts/mm_to_pix.py).
-Press the sensor with a known length, such as a caliper. Press the two points for 5 tries. Copy the output and edit the corresponding sensor's yaml.
-DO NOT PRESS THE SENSOR WITH THE TIP OF THE CALIPER. It will tear the gel. Press the caliper from the side.
+Press the sensor with a known length, such as a caliper. Click the two points
+for five measurements. Copy the averaged output and update `ppmm` in the
+corresponding `sensors/<serial>/<serial>.yaml` before collecting calibration
+data.
+
+**DO NOT PRESS THE SENSOR WITH THE TIP OF THE CALIPER. It will tear the gel.
+Press the caliper from the side.**
 
 <img src="../assets/caliper.jpg" width="150"/>
 
 ```bash
-python mm_to_ppmm.py --serial SERIAL --distance_mm DISTANCE_MM [--frames N] [--sensors_root SENSORS_ROOT]
+python3 -m calibration.mm_to_ppmm \
+  --serial D21242 \
+  --distance_mm DISTANCE_MM \
+  --frames 5
 ```
 
-### Calibration Data Collection
-| Ball Indenter | Collecting Data | Collected Image |
-|---------|---------|---------|
-| <img src="../assets/ball_indenter.jpg" width="150"/>  | <img src="../assets/pressing.jpg" width="150"/>  | <img src="../assets/ball_image.png" width="150"/>  |
+## Data layout
 
-To collect calibration data, use a ball indenter of known diameter to press against the sensor. Examples of the setup and resulting images are shown above.
-```bash
-python collect_data.py --serial SERIAL --ball_diameter DIAMETER [--sensors_root SENSORS_ROOT]
-```
-* Instruction:
-  * Save background image: Press 'b'
-  * Capture 25 tactile images per 3 differnet diameter balls by pressing the ball in various locations: Press 'w'
-  * Exit: Press 'q'
-* Tips for Optimal Calibration:
-  * Ball Size: Select a ball that appears well-sized within the sensor’s view, like the tactile image shown above; 4mm to 9mm is suitable for GelSight Mini.
-  * Pressure: Avoid pressing too hard.
-  * Coverage: Capture at least 50 images with the ball contacting different regions of the sensor.
-  * Using Multiple Balls: Specify distinct `BALL_DIAMETER` values if balls in different size are applied.
+Collection and annotation operate only inside `calibration/inbox/`:
 
-### Label Collected Data
-| NanoGui Screenshot |
-|---------|
-| <img src="../assets/nanogui.png" width="250"/>  |
-
-Run the command below to label the contact circle on the collected tactile data using NanoGUI:
-
-```bash
-python label_data.py --serial SERIAL [--sensors_root SENSORS_ROOT] [--display_difference] [--detect_circle]
-```
-* Instruction:
-  * Click the **Open** icon to begin.
-  * Keyboard Controls for aligning the label with the contact circle:
-    * **Arrow keys (left/right/up/down)**: Adjust the circle's position.
-    * **'m' / 'p'**: Decrease / increase the circle's radius.
-    * **'f' / 'c'**: Decrease / increase the circle's movement step.
-  * Once aligned, click the **Calibrate** icon.
-  * After labeling all data, close the window to exit.
-
-### Prepare Dataset
-Run the command below to prepare the dataset for calibration model training:
-```bash
-python prepare_data.py --serial SERIAL [--sensors_root SENSORS_ROOT] [--radius_reduction RADIUS_REDUCTION]
+```text
+sensors/<serial>/calibration/inbox/
+├── background/
+│   ├── metadata.json
+│   ├── reference.png
+│   └── frames/<session_id>/*.png
+├── ball/
+│   ├── metadata.jsonl
+│   ├── images/<session_id>/*.png
+│   └── labels/<session_id>/*.npz
+└── manual_mask/
+    ├── metadata.jsonl
+    ├── touches/<session_id>/*.png
+    └── masks/<session_id>/*.png
 ```
 
-### Train Calibration Model
-Train the MLP model to map pixel color and location (RGBXY) to surface gradients for each pixel. Gaussian noise can be added to BGRXY features during training for improved robustness. Use the following command to train the model with the collected dataset:
-```bash
-python train_model.py --serial SERIAL [--sensors_root SENSORS_ROOT] [--n_epochs N_EPOCHS] [--lr LR] [--device {cpu, cuda}] [--noise_std NOISE_STD]
+Finalization produces the canonical dataset:
+
+```text
+sensors/<serial>/calibration/
+├── dataset.yaml
+├── manifest.jsonl
+├── background/
+├── ball/
+│   ├── images/<session_id>/*.png
+│   └── labels/<session_id>/*.npz
+├── manual_mask/
+│   ├── images/<session_id>/*.png
+│   └── masks/<session_id>/*.png
+└── splits/
+    ├── background.json
+    ├── ball.json
+    └── manual_mask.json
 ```
 
-* Additional Parameters:
-  * `--noise_std`: Standard deviation of Gaussian noise added to BGRXY during training (default: 0.02). Set to 0 to disable noise augmentation.
+Inbox records never contain train/validation/test assignments. Finalization is
+the only operation that creates frozen splits. Captured PNG files are never
+modified.
 
-The trained model is saved in `CALIB_DIR/model/nnmodel.pth`.
+## Collection
 
-## Test the Trained Calibration Model
-Once the model is trained, connect the sensor and run the following command to stream images and perform real-time surface reconstruction using the trained calibration model:
+All calibration capture runs at 30 Hz. Run commands from the repository root:
 
 ```bash
-python test_model.py --serial SERIAL [--sensors_root SENSORS_ROOT] [--device_type DEVICE_TYPE] [--mode MODE] [--use_mask] [--refine_mask] [--relative] [--relative_scale SCALE] [--mask_only_pointcloud] [--color_dist_threshold THRESHOLD] [--height_threshold THRESHOLD]
+cd ~/ros2/digit_sdk
 ```
 
-* Visualization Modes:
-  * `--mode {depth,gradient,pointcloud}`: Visualization type (default: depth)
-* Masking Options:
-  * `--use_mask`: Show only valid contact area
-  * `--refine_mask`: Apply morphological operations to refine mask
-  * `--mask_only_pointcloud`: Use mask only for point cloud mode
-  * `--color_dist_threshold`: Color distance threshold for contact mask (default: 15)
-  * `--height_threshold`: Height threshold for contact mask in mm (default: 0.2)
-* Depth Options:
-  * `--relative`: Use relative depth instead of absolute
-  * `--relative_scale`: Scale factor for relative depth (default: 0.5)
+### 1. Shared ball background
 
-After starting, wait briefly for background data collection; real-time surface gradient predictions will then be displayed. Press any key to exit (for depth/gradient modes) or close the window (for pointcloud mode).
+Remove all contact, run the command, then press `b`:
 
+```bash
+python3 -m calibration.collect_background --serial D21242
+```
 
-### References
-1. S. Wang, Y. She, B. Romero, and E. H. Adelson, “Gelsight wedge:
-Measuring high-resolution 3d contact geometry with a compact robot
-finger,” in 2021 IEEE International Conference on Robotics and
-Automation (ICRA). IEEE, 2021.
+The collector saves 60 individual no-contact frames one second apart and a
+checked, averaged `reference.png`. Finalization uses exactly those 60 fresh
+frames: 40 train, 10 validation, and 10 test. The average is the single
+reference used by the ball and manual-contact tools; it is not a training
+sample. The collector refuses to overwrite an existing reference.
+
+### 2. Ball indentation
+
+Collect the four ball diameters:
+
+```bash
+for DIAMETER in 3 5 7 9; do
+  python3 -m calibration.collect_ball \
+    --serial D21242 \
+    --ball-diameter-mm "$DIAMETER" \
+    --display-difference
+done
+```
+
+Controls:
+
+- `w`: save one independent indentation;
+- `d`: toggle amplified background difference;
+- `q`: quit.
+
+The guide covers a 5×5 zigzag grid and five indentation levels per cell. The
+level is only capture guidance; metric ground truth comes from the annotated
+circle, known ball diameter, and sensor `ppmm`.
+
+Use a targeted replacement only for an explicitly rejected sample:
+
+```bash
+python3 -m calibration.collect_ball \
+  --serial D21242 \
+  --ball-diameter-mm 3 \
+  --target-row 0 \
+  --target-column 4 \
+  --target-depth 5 \
+  --replaces SAMPLE_ID
+```
+
+### 3. Manual contacts
+
+```bash
+python3 -m calibration.collect_manual_contacts --serial D21242
+```
+
+Controls:
+
+- `t`: save one contact;
+- `q`: quit.
+
+Release and remake contact before every `t`. The preview and console show both
+cumulative inbox counts and counts added during the current session. Camera
+reconnection preserves the current session and previously saved data.
+
+## Annotation
+
+### Ball circles
+
+```bash
+python3 -m calibration.annotate_ball.server --serial D21242
+```
+
+Move the circle by dragging or with arrow keys. Change its radius with the
+slider, mouse wheel, or `+`/`-`. The interface rejects a circle at or beyond the
+ball hemisphere. `Reject sample` excludes an acquisition artifact without
+deleting it; `Undo rejection` restores it.
+
+### Manual contact masks
+
+```bash
+python3 -m calibration.annotate_contact.server --serial D21242
+```
+
+Masks are binary PNG files: `0` is non-contact and `255` is contact.
+
+- `B`, `P`, `E`: brush, polygon, eraser;
+- `Ctrl+Z`, `Ctrl+Y`: undo and redo;
+- `Enter`: finish polygon;
+- `Escape`: cancel polygon;
+- left/right arrows: previous/next sample.
+
+Every save records the annotator, increments `annotation_revision`, and updates
+the mask checksum.
+
+## Finalization
+
+After all accepted ball samples and manual contacts are annotated:
+
+```bash
+python3 -m calibration.finalize_dataset --serial D21242
+```
+
+The default review output is `sensors/<serial>/calibration_next`. The command
+copies checked data, writes the manifest and frozen splits, and runs strict
+schema validation. It never overwrites the active calibration root.
+
+Ball split policy per complete five-depth grid cell:
+
+- three depths: training;
+- one rotating depth: validation;
+- one rotating depth: test.
+
+Manual contacts are assigned deterministically by `split_group`. Defaults are
+20 validation contacts, 20 test contacts, and all remaining contacts for
+training. Change them when necessary:
+
+```bash
+python3 -m calibration.finalize_dataset \
+  --serial D21242 \
+  --manual-validation-count 20 \
+  --manual-test-count 20
+```
+
+Validate any canonical dataset with:
+
+```bash
+python3 -m calibration.validate_dataset \
+  sensors/D21242/calibration_next
+```
+
+Promote the validated candidate while preserving its inbox:
+
+```bash
+python3 -m calibration.promote_dataset --serial D21242
+```
+
+The active dataset is then `sensors/D21242/calibration`. Its inbox remains the
+immutable source for future review and relabeling.
+
+## Dataset contract
+
+`dataset.yaml` fixes the serial, decoded image shape, BGR `uint8` colour
+format, and `ppmm`. `manifest.jsonl` records relative paths, UTC timestamps,
+physical `split_group`, and SHA-256 checksums.
+
+Ball labels contain:
+
+- `ball_diameter_mm`;
+- `center_px` in `[x, y]` order;
+- `radius_px`;
+- `ppmm`;
+- `indentation_depth_mm`.
+
+The label NPZ contains the same fields. Valid geometry requires
+`0 < radius_px / ppmm < ball_diameter_mm / 2`.
+
+Manual-mask records contain a non-empty annotator and a positive annotation
+revision. Masks must match the source image dimensions and contain only `0`
+and `255`.
+
+## Decoder training
+
+The frozen base is downloaded directly from `suddhu/tactile_transformer` as
+`dpt_real.p` at pinned revision
+`b05cfe1df2c90d3d91f8378633173b26de5a2d2c`. Sensor checkpoints contain only
+decoder/head weights.
+
+Finish collection, annotation, and finalization for all four sensors before
+starting decoder training.
+
+The sole training method is `mixed`: stage 1 learns metric depth from sphere
+contacts, then stage 2 alternates sphere-depth and manual contact-mask updates.
+Background records are held out for evaluation; they are not training
+negatives.
+
+For one sensor, a single invocation runs seeds 17, 29, and 43 in separate
+processes and selects the best eligible validation seed:
+
+```bash
+python3 -m calibration.train_decoder --serial D21242
+```
+
+Completed runs matching the active dataset and frozen training protocol are
+reused. Partial or stale published runs are rejected. Seed selection is part
+of training; it is not method selection.
+
+The selected artifacts remain under the `mixed` directory:
+
+```text
+sensors/<serial>/model/tactile_transformer/mixed/
+├── seed_17/
+├── seed_29/
+├── seed_43/
+├── decoder.pth
+└── selection.json
+```
+
+Test partitions remain unopened until the global method and per-sensor seed
+choices are frozen. Production promotion remains a separate acceptance step.
+
+Open each frozen test split once:
+
+```bash
+python3 -m calibration.evaluate_decoder --serial D21242
+```
+
+The evaluator refuses to overwrite an existing `test.json`. After its test
+gates pass, promote the exact tested decoder:
+
+```bash
+python3 -m calibration.promote_decoder --serial D21242
+```
+
+Promotion is fixed to `mixed`, verifies the active dataset fingerprint and
+decoder hashes, and refuses to replace an existing production model. Runtime
+artifacts are written to `sensors/D21242/model/depth/`.
+
+## Depth units
+
+Training targets and raw model output use `float32` millimetres. The runtime
+`depth_cutoff` is also configured in millimetres and is applied only after
+inference. ROS depth images and point clouds use metres.

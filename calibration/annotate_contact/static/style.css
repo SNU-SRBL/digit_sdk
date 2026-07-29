@@ -1,0 +1,116 @@
+:root {
+  color-scheme: dark;
+  --bg: #101214;
+  --panel: #181b1f;
+  --panel-2: #20242a;
+  --line: #343a42;
+  --text: #f0f2f4;
+  --muted: #9ca5af;
+  --accent: #ff665f;
+  --accent-soft: #542c2d;
+  --ok: #66d19e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+header {
+  height: 82px;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  background: #14171a;
+}
+
+h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+.eyebrow, .section-label { color: var(--muted); text-transform: uppercase; letter-spacing: .12em; font-size: 10px; font-weight: 700; }
+.eyebrow { margin: 0 0 2px; }
+
+.identity { display: flex; align-items: center; gap: 10px; }
+.identity label { color: var(--muted); }
+
+input[type="text"], input:not([type]) {
+  width: 190px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+main { display: grid; grid-template-columns: 248px 1fr; height: calc(100vh - 82px); }
+.panel { background: var(--panel); border-right: 1px solid var(--line); padding: 20px; overflow-y: auto; }
+.tools section { margin-bottom: 24px; }
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 12px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: #58616d; background: #272c33; }
+button:disabled { opacity: .38; cursor: default; }
+button.active { background: var(--accent-soft); border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #151515; font-weight: 750; }
+
+.segmented { display: grid; grid-template-columns: 1fr; gap: 7px; margin-top: 8px; }
+.button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.range-label { display: flex; justify-content: space-between; margin-bottom: 7px; }
+.range-label output { color: var(--muted); font-variant-numeric: tabular-nums; }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+.check-row { display: flex; align-items: center; gap: 9px; }
+.check-row input { accent-color: var(--accent); }
+.instructions p { color: var(--muted); margin: 7px 0 0; }
+
+.workspace { display: grid; grid-template-rows: 64px minmax(0, 1fr) 58px; min-width: 0; }
+.sample-bar, .status-bar { display: flex; align-items: center; gap: 16px; padding: 10px 18px; background: var(--panel); }
+.sample-bar { border-bottom: 1px solid var(--line); }
+.status-bar { border-top: 1px solid var(--line); }
+.sample-title { flex: 1; min-width: 0; text-align: center; }
+.sample-title strong, .sample-title span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sample-title span { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.canvas-scroll {
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 36px;
+  background-color: #0b0d0f;
+  background-image: linear-gradient(45deg, #111417 25%, transparent 25%), linear-gradient(-45deg, #111417 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #111417 75%), linear-gradient(-45deg, transparent 75%, #111417 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+#view {
+  display: block;
+  image-rendering: auto;
+  box-shadow: 0 18px 60px #000b;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+#save-status { flex: 1; color: var(--muted); }
+#save-status[data-state="dirty"] { color: #ffce6d; }
+#save-status[data-state="saving"] { color: #8db9ff; }
+#save-status[data-state="saved"] { color: var(--ok); }
+#save-status[data-state="error"] { color: var(--accent); }
+#queue-status { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 800px) {
+  header { padding: 12px; }
+  main { grid-template-columns: 190px 1fr; }
+  .panel { padding: 14px; }
+  .identity { align-items: flex-end; flex-direction: column; gap: 3px; }
+  .identity input { width: 150px; }
+}

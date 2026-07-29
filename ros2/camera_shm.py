@@ -7,35 +7,31 @@ to a SharedMemory block named 'tactile_{serial}'.
 Layout (header + dynamic payload):
   Offset   Size  Field        Type     Description
   ------   ----  -----        ----     -----------
-      0      8   seq          uint64   Monotonic frame counter
-      8      8   timestamp_ns uint64   time.monotonic_ns() at capture
-     16      4   height       uint32   Frame height
-     20      4   width        uint32   Frame width
-     24      1   valid        uint8    0=writing, 1=complete
-     25      7   (padding)    --       Alignment to 32
+      0      8   generation   uint64   Odd=writing, even=stable, 0=empty
+      8      8   seq          uint64   Monotonic frame counter
+     16      8   timestamp_ns uint64   time.time_ns() at capture
+     24      4   height       uint32   Frame height
+     28      4   width        uint32   Frame width
      32    H*W*3  data         uint8[]  BGR frame (height × width × 3)
 
-Synchronization (lock-free, single writer / single reader):
-  1. Set valid=0
-  2. Write data
-  3. Increment seq
-  4. Set valid=1
+Synchronization (lock-free, single writer / multiple readers):
+  1. Publish an odd generation.
+  2. Write metadata and data.
+  3. Publish the next even generation.
+Readers accept a copied frame only when generation is unchanged and even.
 """
 
 import argparse
 import os
 import signal
-import struct
 import sys
 import time
 from multiprocessing import shared_memory
 
-import cv2
-import numpy as np
-
 from digit_sdk.camera import Camera
+from digit_sdk.shm_protocol import CAMERA_HEADER_SIZE, write_camera_frame
 
-SHM_HEADER = 32  # bytes before pixel data
+SHM_HEADER = CAMERA_HEADER_SIZE
 
 
 def _parse_affinity(spec: str):
@@ -87,6 +83,7 @@ def run(serial: str, sensors_root: str, verbose: bool = False):
     signal.signal(signal.SIGINT, _cleanup)
 
     seq = 0
+    generation = 0
     buf = shm.buf
 
     if verbose:
@@ -106,14 +103,18 @@ def run(serial: str, sensors_root: str, verbose: bool = False):
         # Store BGR directly (raw_bridge needs BGR, processing_engine expects BGR)
         bgr = frame
         h, w = bgr.shape[:2]
-        ts_ns = time.monotonic_ns()
+        # ROS headers require Unix-epoch time. Monotonic time is only suitable
+        # for local interval measurement and must never be published as a stamp.
+        ts_ns = time.time_ns()
 
-        # Write: valid=0, metadata, data, seq++, valid=1
-        buf[24] = 0
-        struct.pack_into('<QQII', buf, 0, seq, ts_ns, h, w)
-        buf[SHM_HEADER:SHM_HEADER + h * w * 3] = np.ascontiguousarray(bgr).tobytes()
+        generation = write_camera_frame(
+            buf,
+            generation=generation,
+            sequence=seq,
+            timestamp_ns=ts_ns,
+            image=bgr,
+        )
         seq += 1
-        buf[24] = 1
 
         # Pace at 60 Hz to avoid USB bus starvation
         elapsed = time.monotonic() - t0
