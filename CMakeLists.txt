@@ -72,8 +72,18 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_pytest REQUIRED)
-  ament_add_pytest_test(test_dct_equivalence test/test_dct_equivalence.py
-    TIMEOUT 30)
+  ament_add_pytest_test(test_lazy_imports test/test_lazy_imports.py TIMEOUT 30
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_shm_protocol test/test_shm_protocol.py TIMEOUT 30
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_camera_recovery test/test_camera_recovery.py TIMEOUT 30
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_processing_engine test/test_processing_engine.py TIMEOUT 30
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_production_depth test/test_production_depth.py TIMEOUT 30
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
+  ament_add_pytest_test(test_surface_conversion test/test_surface_conversion.py TIMEOUT 30
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 ament_package()
