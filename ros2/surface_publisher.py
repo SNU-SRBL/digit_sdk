@@ -3,6 +3,7 @@
 
 import array
 import os
+import sys
 import time
 
 import numpy as np
@@ -15,11 +16,16 @@ from rclpy._rclpy_pybind11 import RCLError
 from sensor_msgs.msg import Image, PointCloud2, PointField
 
 from digit_sdk.depth_geometry import depth_to_pointcloud
-from digit_sdk.shm_protocol import open_shared_memory, read_surface_frame
+from digit_sdk.publisher_shm import (
+    ShmConnectError,
+    connect_shm_with_retry,
+    reopen_shm_if_stale,
+)
+from digit_sdk.shm_protocol import read_surface_frame
 
 
 _BE_QOS = QoSProfile(
-    depth=1,
+    depth=10,
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
 )
@@ -38,6 +44,8 @@ class SurfacePublisher(Node):
         super().__init__("surface_publisher")
         self.declare_parameter("serial", value="")
         self.declare_parameter("rate", 60.0)
+        self.declare_parameter("poll_oversample", 2.0)
+        self.declare_parameter("liveness_timeout", 2.0)
         self.declare_parameter("cpu_affinity", "")
         self.declare_parameter("publish_depth", True)
         self.declare_parameter("publish_pointcloud", False)
@@ -46,6 +54,10 @@ class SurfacePublisher(Node):
 
         serial = self.get_parameter("serial").value
         rate = float(self.get_parameter("rate").value)
+        poll_oversample = float(self.get_parameter("poll_oversample").value)
+        self._liveness_timeout = float(
+            self.get_parameter("liveness_timeout").value
+        )
         self._publish_depth = bool(self.get_parameter("publish_depth").value)
         self._publish_pointcloud = bool(
             self.get_parameter("publish_pointcloud").value
@@ -62,24 +74,16 @@ class SurfacePublisher(Node):
             raise ValueError("at least one surface output must be enabled")
         if self._publish_pointcloud and self._ppmm <= 0:
             raise ValueError("positive ppmm is required for point-cloud output")
+        if poll_oversample <= 0:
+            raise ValueError("poll_oversample must be positive")
 
         self._serial = serial
         self._last_depth_seq = -1
         self._last_pointcloud_seq = -1
-        self._shm = None
-        attempt = 0
-        while self._shm is None:
-            try:
-                self._shm = open_shared_memory(
-                    f"tactile_{serial}_surface"
-                )
-            except FileNotFoundError:
-                attempt += 1
-                if attempt == 1 or attempt % 300 == 0:
-                    self.get_logger().warn(
-                        f"Surface SHM not ready for {serial}; waiting"
-                    )
-                time.sleep(0.1)
+        self._last_fresh = time.monotonic()
+        self._shm = connect_shm_with_retry(
+            f"tactile_{serial}_surface"
+        )
 
         self._pub_depth = (
             self.create_publisher(Image, f"tactile/{serial}/depth", _BE_QOS)
@@ -92,17 +96,18 @@ class SurfacePublisher(Node):
             if self._publish_pointcloud else None
         )
         self._timers = []
+        poll_period = 1.0 / (rate * poll_oversample)
         if self._publish_depth:
             self._depth_group = MutuallyExclusiveCallbackGroup()
             self._timers.append(self.create_timer(
-                1.0 / rate,
+                poll_period,
                 self._publish_latest_depth,
                 callback_group=self._depth_group,
             ))
         if self._publish_pointcloud:
             self._pointcloud_group = MutuallyExclusiveCallbackGroup()
             self._timers.append(self.create_timer(
-                1.0 / rate,
+                poll_period,
                 self._publish_latest_pointcloud,
                 callback_group=self._pointcloud_group,
             ))
@@ -136,7 +141,10 @@ class SurfacePublisher(Node):
             return
         snapshot = read_surface_frame(self._shm.buf)
         if snapshot is None or snapshot.sequence == self._last_depth_seq:
+            if time.monotonic() - self._last_fresh > self._liveness_timeout:
+                self._recover_shm()
             return
+        self._last_fresh = time.monotonic()
         self._last_depth_seq = snapshot.sequence
         frame_id = f"tactile_{self._serial}_optical_frame"
         height, width = snapshot.depth.shape
@@ -161,7 +169,10 @@ class SurfacePublisher(Node):
             return
         snapshot = read_surface_frame(self._shm.buf)
         if snapshot is None or snapshot.sequence == self._last_pointcloud_seq:
+            if time.monotonic() - self._last_fresh > self._liveness_timeout:
+                self._recover_shm()
             return
+        self._last_fresh = time.monotonic()
         self._last_pointcloud_seq = snapshot.sequence
         points = depth_to_pointcloud(
             snapshot.depth, self._ppmm, self._point_sample_mm
@@ -193,6 +204,25 @@ class SurfacePublisher(Node):
             if rclpy.ok():
                 raise
 
+    def _recover_shm(self):
+        name = f"tactile_{self._serial}_surface"
+        fresh = reopen_shm_if_stale(
+            name, self._shm, liveness_timeout_s=self._liveness_timeout
+        )
+        if fresh is None:
+            try:
+                fresh = connect_shm_with_retry(
+                    name, timeout_s=self._liveness_timeout
+                )
+            except ShmConnectError as exc:
+                self.get_logger().fatal(str(exc))
+                sys.exit(1)
+        self._shm = fresh
+        self._last_depth_seq = -1
+        self._last_pointcloud_seq = -1
+        self._last_fresh = time.monotonic()
+        self.get_logger().warn(f"Reattached surface SHM {name}")
+
     def destroy_node(self):
         for timer in self._timers:
             timer.cancel()
@@ -203,7 +233,11 @@ class SurfacePublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SurfacePublisher()
+    try:
+        node = SurfacePublisher()
+    except ShmConnectError as exc:
+        print(f"FATAL: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
     if node._publish_depth and node._publish_pointcloud:
         executor = MultiThreadedExecutor(num_threads=2)
     else:

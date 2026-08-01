@@ -62,18 +62,51 @@ def _sensor_config(sensors_root: str, serial: str) -> dict:
         return {}
 
 
-def launch_setup(context, *_args, **_kwargs):
+def _owned_serials(context) -> List[str]:
+    sensors_root = LaunchConfiguration("sensors_root").perform(context)
+    serials_argument = LaunchConfiguration("serials").perform(context)
+    sensors = [
+        value.strip() for value in serials_argument.split(",") if value.strip()
+    ]
+    if not sensors and os.path.isdir(sensors_root):
+        for item in sorted(os.listdir(sensors_root)):
+            config = os.path.join(sensors_root, item, f"{item}.yaml")
+            if os.path.isfile(config):
+                sensors.append(item)
+    if not sensors:
+        sensors = ["D21275", "D21273", "D21242", "D21119"]
+    return sensors
+
+
+def _serial_scoped_cleanup(serial: str) -> None:
+    """Stop only processes and SHM files owned by this launch instance."""
+    for pattern in (
+        rf"camera_shm .*--serial {serial}( |$)",
+        rf"raw_publisher .*serial.{serial}( |$)",
+        rf"surface_publisher .*serial.{serial}( |$)",
+    ):
+        subprocess.run(
+            ["pkill", "-2", "-f", pattern],
+            check=False,
+            timeout=3,
+        )
+    shm_names = [
+        f"/dev/shm/tactile_{serial}{suffix}"
+        for suffix in ("", "_surface", "_force")
+    ]
     subprocess.run(
-        ["pkill", "-2", "-f", "camera_shm|pipeline_node|raw_publisher|surface_publisher"],
+        ["rm", "-f", *shm_names],
         check=False,
         timeout=3,
     )
-    subprocess.run(
-        ["bash", "-c", "rm -f /dev/shm/tactile_*"], check=False, timeout=3
-    )
+
+
+def launch_setup(context, *_args, **_kwargs):
+    sensors = _owned_serials(context)
+    for serial in sensors:
+        _serial_scoped_cleanup(serial)
 
     sensors_root = LaunchConfiguration("sensors_root").perform(context)
-    serials_argument = LaunchConfiguration("serials").perform(context)
     model_device = LaunchConfiguration("model_device").perform(context)
     rate = float(LaunchConfiguration("rate").perform(context))
     depth_cutoff = float(LaunchConfiguration("depth_cutoff").perform(context))
@@ -87,17 +120,6 @@ def launch_setup(context, *_args, **_kwargs):
     point_sample_mm = float(
         LaunchConfiguration("point_sample_mm").perform(context)
     )
-
-    sensors = [
-        value.strip() for value in serials_argument.split(",") if value.strip()
-    ]
-    if not sensors and os.path.isdir(sensors_root):
-        for item in sorted(os.listdir(sensors_root)):
-            config = os.path.join(sensors_root, item, f"{item}.yaml")
-            if os.path.isfile(config):
-                sensors.append(item)
-    if not sensors:
-        sensors = ["D21275", "D21273", "D21242", "D21119"]
 
     affinity = _get_tactile_affinity()
     camera_cores = affinity.get("camera_shm", [0, 1, 2, 3])

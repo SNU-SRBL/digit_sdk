@@ -12,8 +12,8 @@ Topics:
 
 import os
 import struct
+import sys
 import time
-from multiprocessing import shared_memory
 
 import rclpy
 from rclpy.node import Node
@@ -24,6 +24,11 @@ from geometry_msgs.msg import WrenchStamped
 import numpy as np
 
 from digit_sdk.viz_utils import force_field_to_rgb
+from digit_sdk.publisher_shm import (
+    ShmConnectError,
+    connect_shm_with_retry,
+    reopen_shm_if_stale,
+)
 
 _BE_QOS = QoSProfile(
     depth=10,
@@ -42,10 +47,14 @@ class ForcePublisher(Node):
 
         self.declare_parameter('serial', value='')
         self.declare_parameter('rate', 30.0)
+        self.declare_parameter('liveness_timeout', 2.0)
         self.declare_parameter('cpu_affinity', '')
 
         serial = self.get_parameter('serial').value
         rate = self.get_parameter('rate').value
+        self._liveness_timeout = float(
+            self.get_parameter('liveness_timeout').value
+        )
         cpu_affinity = self.get_parameter('cpu_affinity').value
 
         if cpu_affinity:
@@ -64,21 +73,9 @@ class ForcePublisher(Node):
             self.get_logger().error('No serial parameter — nothing to do')
             return
 
-        # Connect to SHM (retry up to 10s)
-        self._shm = None
-        for _ in range(100):
-            try:
-                self._shm = shared_memory.SharedMemory(
-                    name=f'tactile_{serial}_force', create=False)
-                break
-            except FileNotFoundError:
-                time.sleep(0.1)
-        if self._shm is None:
-            self.get_logger().error(
-                f'Force SHM not found for {serial} — exiting')
-            return
-
         self._serial = serial
+        self._last_fresh = time.monotonic()
+        self._shm = connect_shm_with_retry(f'tactile_{serial}_force')
 
         # Publishers
         self._pub_field = self.create_publisher(
@@ -100,7 +97,10 @@ class ForcePublisher(Node):
         buf = self._shm.buf
 
         if not buf[36]:
+            if time.monotonic() - self._last_fresh > self._liveness_timeout:
+                self._recover_shm()
             return
+        self._last_fresh = time.monotonic()
 
         h, w = struct.unpack_from('<II', buf, 16)
         fx, fy, fz = struct.unpack_from('<fff', buf, 24)
@@ -158,6 +158,23 @@ class ForcePublisher(Node):
         vec_msg.wrench.force.z = float(fz)
         self._pub_vector.publish(vec_msg)
 
+    def _recover_shm(self):
+        name = f'tactile_{self._serial}_force'
+        fresh = reopen_shm_if_stale(
+            name, self._shm, liveness_timeout_s=self._liveness_timeout
+        )
+        if fresh is None:
+            try:
+                fresh = connect_shm_with_retry(
+                    name, timeout_s=self._liveness_timeout
+                )
+            except ShmConnectError as exc:
+                self.get_logger().fatal(str(exc))
+                sys.exit(1)
+        self._shm = fresh
+        self._last_fresh = time.monotonic()
+        self.get_logger().warn(f'Reattached force SHM {name}')
+
     def destroy_node(self):
         if self._shm is not None:
             self._shm.close()
@@ -166,7 +183,11 @@ class ForcePublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = ForcePublisher()
+    try:
+        node = ForcePublisher()
+    except ShmConnectError as exc:
+        print(f'FATAL: {exc}', file=sys.stderr, flush=True)
+        sys.exit(1)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
