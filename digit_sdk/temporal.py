@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 
 import numpy as np
+import torch
 
 
 class NeuralFeelsFIR:
@@ -19,6 +20,8 @@ class NeuralFeelsFIR:
         self._history.clear()
 
     def __call__(self, depth_mm: np.ndarray) -> np.ndarray:
+        if isinstance(depth_mm, torch.Tensor):
+            return self._call_tensor(depth_mm)
         current = np.asarray(depth_mm, dtype=np.float32)
         if current.ndim != 2:
             raise ValueError("depth_mm must be a 2D array")
@@ -33,6 +36,23 @@ class NeuralFeelsFIR:
         for weight, frame in zip(weights, self._history, strict=True):
             output += np.float32(weight) * frame
         return output
+
+    def _call_tensor(self, depth_mm: torch.Tensor) -> torch.Tensor:
+        current = depth_mm.float()
+        if current.dim() != 2:
+            raise ValueError("depth_mm must be a 2D array")
+        if self._history and self._history[-1].shape != current.shape:
+            self.reset()
+        self._history.append(current)
+
+        count = len(self._history)
+        weights = np.exp(np.arange(1, count + 1, dtype=np.float64) / count)
+        weights /= weights.sum()
+        weight_tensor = torch.as_tensor(
+            weights, dtype=current.dtype, device=current.device
+        )
+        frames = torch.stack(list(self._history))
+        return (frames * weight_tensor[:, None, None]).sum(dim=0)
 
 
 class PersistenceCutoff:
@@ -52,6 +72,8 @@ class PersistenceCutoff:
         self._history.clear()
 
     def __call__(self, depth_mm: np.ndarray) -> np.ndarray:
+        if isinstance(depth_mm, torch.Tensor):
+            return self._call_tensor(depth_mm)
         current = np.asarray(depth_mm, dtype=np.float32)
         if current.ndim != 2:
             raise ValueError("depth_mm must be a 2D array")
@@ -62,3 +84,15 @@ class PersistenceCutoff:
         return np.where(
             hits >= self.minimum_hits, current, 0.0
         ).astype(np.float32)
+
+    def _call_tensor(self, depth_mm: torch.Tensor) -> torch.Tensor:
+        current = depth_mm.float()
+        if current.dim() != 2:
+            raise ValueError("depth_mm must be a 2D array")
+        if self._history and self._history[-1].shape != current.shape:
+            self.reset()
+        self._history.append(current >= self.cutoff_mm)
+        hits = torch.stack(list(self._history)).sum(dim=0)
+        return torch.where(
+            hits >= self.minimum_hits, current, torch.zeros_like(current)
+        )

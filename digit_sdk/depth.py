@@ -353,6 +353,20 @@ class DepthEstimator:
         if not ordered:
             return {}
         shapes = {serial: inputs[serial].output_shape for serial in ordered}
+        if self.device.type == "cuda":
+            tensors = self.estimate_prepared_batch_tensors(inputs)
+            results = {}
+            for serial in ordered:
+                depth = (
+                    tensors[serial].float().cpu().numpy().astype(np.float32)
+                )
+                height, width = shapes[serial]
+                validate_depth_raw_mm(
+                    depth, expected_shape=(height, width)
+                )
+                results[serial] = depth
+            return results
+
         images = (
             torch.stack([inputs[s].tensor for s in ordered])
             .to(self.device, non_blocking=self.device.type == "cuda")
@@ -426,6 +440,77 @@ class DepthEstimator:
             height, width = shapes[serial]
             validate_depth_raw_mm(depth, expected_shape=(height, width))
             results[serial] = depth
+        return results
+
+    @torch.inference_mode()
+    def estimate_prepared_batch_tensors(
+        self, inputs: Mapping[str, DepthInput]
+    ) -> Dict[str, torch.Tensor]:
+        """Estimate a batch and return GPU float32 depth tensors."""
+        unknown = set(inputs) - set(self.serials)
+        if unknown:
+            raise KeyError(f"unconfigured sensor serials: {sorted(unknown)}")
+        ordered = [serial for serial in self.serials if serial in inputs]
+        if not ordered:
+            return {}
+        shapes = {serial: inputs[serial].output_shape for serial in ordered}
+        images = (
+            torch.stack([inputs[s].tensor for s in ordered])
+            .to(self.device, non_blocking=True)
+            .float()
+            .div_(255.0)
+            .sub_(0.5)
+            .div_(0.5)
+        )
+        predictions = []
+        if (
+            self._compiled_full_batch is not None
+            and tuple(ordered) == self.serials
+        ):
+            torch.compiler.cudagraph_mark_step_begin()
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                batch = self._compiled_full_batch(images)
+            predictions = [
+                batch[index] * self._maximum_depth_mm[serial]
+                for index, serial in enumerate(ordered)
+            ]
+        else:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                activations = self._encoder(images)
+            if not predictions:
+                encoder_complete = torch.cuda.Event()
+                encoder_complete.record(
+                    torch.cuda.current_stream(self.device)
+                )
+                for index, serial in enumerate(ordered):
+                    stream = self._decoder_streams[serial]
+                    stream.wait_event(encoder_complete)
+                    with torch.cuda.stream(stream), torch.autocast(
+                        device_type="cuda", dtype=torch.float16
+                    ):
+                        prediction = self._decoders[serial](
+                            tuple(
+                                value[index:index + 1]
+                                for value in activations
+                            )
+                        )[0, 0] * self._maximum_depth_mm[serial]
+                        predictions.append(prediction)
+                current = torch.cuda.current_stream(self.device)
+                for serial in ordered:
+                    current.wait_stream(self._decoder_streams[serial])
+
+        results = {}
+        for serial, prediction in zip(ordered, predictions):
+            height, width = shapes[serial]
+            resized = torch.nn.functional.interpolate(
+                prediction.unsqueeze(0).unsqueeze(0),
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0]
+            results[serial] = torch.clamp(
+                resized, 0.0, self._maximum_depth_mm[serial]
+            )
         return results
 
     def estimate(self, serial: str, frame: np.ndarray) -> np.ndarray:

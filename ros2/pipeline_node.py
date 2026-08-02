@@ -3,6 +3,8 @@
 
 import os
 from multiprocessing import shared_memory
+import threading
+import time
 from typing import Dict
 
 import rclpy
@@ -56,7 +58,7 @@ class PipelineNode(Node):
             # torch was imported before Node construction and may have sized
             # its pools for every system CPU. Match the production affinity to
             # prevent oversubscribed workers from starving camera processes.
-            torch.set_num_threads(max(1, len(cores)))
+            torch.set_num_threads(1)
             torch.set_num_interop_threads(1)
 
         serials_raw = self.get_parameter("serials").value
@@ -90,52 +92,53 @@ class PipelineNode(Node):
             self._surface_generations[serial] = 0
             self._last_written_sequences[serial] = -1
 
-        self._engine.start_workers()
         rate = float(self.get_parameter("rate").value)
-        self._pending_snapshots = {}
-        # Oversample camera SHM to avoid phase aliasing, then submit at exactly
-        # the requested inference rate.
-        self._poll_timer = self.create_timer(
-            0.5 / rate, self._poll_cameras
+        self._stop = threading.Event()
+        self._coordinator_thread = threading.Thread(
+            target=self._coordinator,
+            daemon=True,
+            name="pipeline-coordinator",
         )
-        self._timer = self.create_timer(1.0 / rate, self._tick)
+        self._coordinator_thread.start()
         self.get_logger().info(
             f"Depth pipeline ready for {len(self._engine.serials)} sensors "
             f"({', '.join(self._engine.serials)}) @ {rate:.0f}Hz "
             "(NeuralFeels FIR window=5)"
         )
 
-    def _poll_cameras(self):
-        snapshots = self._engine.read_available_frames()
-        if snapshots:
-            self._pending_snapshots.update(snapshots)
-
-    def _tick(self):
-        if self._pending_snapshots:
-            snapshots = self._pending_snapshots
-            self._pending_snapshots = {}
-            self._engine.submit_frames(snapshots)
-
-        for serial in self._engine.serials:
-            result = self._engine.get_latest_result(serial)
-            if (
-                result is None
-                or result.source_sequence
-                == self._last_written_sequences[serial]
-            ):
-                continue
-            generation = write_surface_frame(
-                self._surface_shms[serial].buf,
-                generation=self._surface_generations[serial],
-                sequence=result.source_sequence,
-                timestamp_ns=result.timestamp_ns,
-                depth=result.depth_mm,
-                pointcloud=None,
-            )
-            self._surface_generations[serial] = generation
-            self._last_written_sequences[serial] = result.source_sequence
+    def _coordinator(self):
+        rate = float(self.get_parameter("rate").value)
+        period = 1.0 / rate
+        while True:
+            started = time.monotonic()
+            try:
+                snapshots = self._engine.read_available_frames()
+                if snapshots:
+                    results = self._engine.process_snapshots(snapshots)
+                    for serial, result in results.items():
+                        generation = write_surface_frame(
+                            self._surface_shms[serial].buf,
+                            generation=self._surface_generations[serial],
+                            sequence=result.source_sequence,
+                            timestamp_ns=result.timestamp_ns,
+                            depth=result.depth_mm,
+                            pointcloud=None,
+                        )
+                        self._surface_generations[serial] = generation
+                        self._last_written_sequences[serial] = (
+                            result.source_sequence
+                        )
+            except Exception:
+                self.get_logger().exception("pipeline cycle failed")
+            delay = period - (time.monotonic() - started)
+            if delay > 0:
+                self._stop.wait(delay)
+            if self._stop.is_set():
+                break
 
     def destroy_node(self):
+        self._stop.set()
+        self._coordinator_thread.join(timeout=2.0)
         self._engine.shutdown()
         for shm in self._surface_shms.values():
             try:

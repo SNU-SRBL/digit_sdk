@@ -16,6 +16,7 @@ import time
 from typing import Dict, Mapping, Optional, Sequence
 
 import numpy as np
+import torch
 
 from .depth import DepthEstimator, DepthInput
 from .shm_protocol import (
@@ -122,6 +123,50 @@ class ProcessingEngine:
             if snapshot is not None:
                 snapshots[serial] = snapshot
         return snapshots
+
+    def process_snapshots(
+        self, snapshots: Mapping[str, CameraFrameSnapshot]
+    ) -> Dict[str, DepthFrame]:
+        unknown = set(snapshots) - set(self._serials)
+        if unknown:
+            raise KeyError(f"inactive sensor serials: {sorted(unknown)}")
+        if not snapshots:
+            return {}
+        prepared = {
+            serial: _PendingDepthInput(
+                source_sequence=snapshot.sequence,
+                timestamp_ns=snapshot.timestamp_ns,
+                prepared=self._estimator.prepare(snapshot.image),
+            )
+            for serial, snapshot in snapshots.items()
+        }
+        prepared_batch = {
+            serial: item.prepared for serial, item in prepared.items()
+        }
+        if getattr(self._estimator, "device", None) is not None and (
+            self._estimator.device.type == "cuda"
+        ):
+            raw_depths = self._estimator.estimate_prepared_batch_tensors(
+                prepared_batch
+            )
+        else:
+            raw_depths = self._estimator.estimate_prepared_batch(
+                prepared_batch
+            )
+        results: Dict[str, DepthFrame] = {}
+        for serial, item in prepared.items():
+            if serial not in raw_depths:
+                continue
+            result = self._make_result(
+                serial,
+                raw_depths[serial],
+                source_sequence=item.source_sequence,
+                timestamp_ns=item.timestamp_ns,
+            )
+            self._processed_sequences[serial] = result.source_sequence
+            self._latest_results[serial] = result
+            results[serial] = result
+        return results
 
     def submit_frames(
         self, snapshots: Mapping[str, CameraFrameSnapshot]
@@ -306,6 +351,8 @@ class ProcessingEngine:
         persistence = self._persistence_filters.get(serial)
         if persistence is not None:
             depth_filtered_mm = persistence(depth_filtered_mm)
+        if isinstance(depth_filtered_mm, torch.Tensor):
+            depth_filtered_mm = depth_filtered_mm.detach().cpu().numpy()
         return DepthFrame(
             source_sequence=source_sequence,
             timestamp_ns=timestamp_ns,
