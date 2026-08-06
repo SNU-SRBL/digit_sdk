@@ -15,6 +15,8 @@ def depth_to_pointcloud(
     xs = np.arange(0, width, stride, dtype=np.float32) - width / 2 + 0.5
     x_grid, y_grid = np.meshgrid(xs, ys)
     depth_m = depth_mm[::stride, ::stride].astype(np.float32) / 1000.0
+    keep = depth_m > 0
+    x_grid, y_grid, depth_m = x_grid[keep], y_grid[keep], depth_m[keep]
     return np.stack(
         (x_grid / ppmm / 1000.0, y_grid / ppmm / 1000.0, -depth_m),
         axis=-1,

@@ -31,7 +31,7 @@ Force estimation is a separate, optional
 | Geometric supervision | GS-SDK-inspired calibration | 3, 5, 7, and 9 mm sphere contacts |
 | Real-contact supervision | Custom data | Binary manual contact masks |
 | Temporal refinement | NeuralFeels finite weighted blend | Fixed five-frame FIR per sensor |
-| Contact suppression | Runtime postprocessing | `0.1 mm` cutoff by default |
+| Contact suppression | Runtime postprocessing | `0.2 mm` cutoff by default |
 | Force estimation | Sparsh | Optional, separate from depth |
 | Additional depth influence | digit-depth | Per-sensor DIGIT calibration |
 
@@ -46,7 +46,7 @@ DIGIT RGB
   → sensor-specific decoder
   → raw metric depth in mm
   → five-frame NeuralFeels FIR
-  → depth_cutoff (default 0.1 mm)
+  → depth_cutoff (default 0.2 mm)
   → ROS depth in metres / point cloud in metres
 ```
 
@@ -133,7 +133,7 @@ ros2 launch digit_sdk multi_sensor_tactile_streamer.launch.py \
   publish_raw:=true \
   publish_depth:=true \
   publish_pointcloud:=false \
-  depth_cutoff:=0.1 \
+  depth_cutoff:=0.2 \
   model_device:=cuda \
   rate:=60.0
 ```
@@ -156,7 +156,7 @@ ros2 launch digit_sdk multi_sensor_tactile_streamer.launch.py \
 | `publish_raw` | `true` | Launch raw-image publishers |
 | `publish_depth` | `true` | Publish `32FC1` metric depth |
 | `publish_pointcloud` | `false` | Derive and publish point clouds |
-| `depth_cutoff` | `0.1` | Cutoff in millimetres; `0` disables it |
+| `depth_cutoff` | `0.2` | Cutoff in millimetres; `0` disables it |
 | `point_sample_mm` | `0.2` | Point-cloud spacing; `0` retains every pixel |
 | `sensors_root` | auto | Sensor configuration and model root |
 

@@ -267,7 +267,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "depth_cutoff",
-            default_value="0.1",
+            default_value="0.2",
             description="Post-process depth cutoff in millimetres; 0 disables it",
         ),
         DeclareLaunchArgument(
