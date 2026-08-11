@@ -146,7 +146,7 @@ class SurfacePublisher(Node):
             return
         self._last_fresh = time.monotonic()
         self._last_depth_seq = snapshot.sequence
-        frame_id = f"tactile_{self._serial}_optical_frame"
+        frame_id = f"tactile_{self._serial}_depth_frame"
         height, width = snapshot.depth.shape
         depth_m = np.ascontiguousarray(snapshot.depth / 1000.0, dtype=np.float32)
         message = Image()
@@ -178,7 +178,7 @@ class SurfacePublisher(Node):
             snapshot.depth, self._ppmm, self._point_sample_mm
         )
         message = PointCloud2()
-        message.header.frame_id = f"tactile_{self._serial}_optical_frame"
+        message.header.frame_id = f"tactile_{self._serial}_depth_frame"
         _set_stamp(message.header.stamp, snapshot.timestamp_ns)
         message.height = 1
         message.width = len(points)

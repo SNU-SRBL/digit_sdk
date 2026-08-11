@@ -208,23 +208,6 @@ def launch_setup(context, *_args, **_kwargs):
                 }],
             ))
 
-        optical = config.get("optical_frame", {})
-        optical_rpy = [
-            str(value) for value in optical.get("optical_rpy", [0.0, 0.0, 0.0])
-        ]
-        optical_xyz = [
-            str(value) for value in optical.get("optical_xyz", [0.0, 0.0, 0.0])
-        ]
-        nodes.append(Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name=f"optical_{serial}",
-            output="log",
-            arguments=optical_xyz + optical_rpy + [
-                f"tactile_{serial}_base_link",
-                f"tactile_{serial}_optical_frame",
-            ],
-        ))
     return nodes
 
 

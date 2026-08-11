@@ -101,7 +101,7 @@ class RawPublisher(Node):
         msg.is_bigendian = False
         msg.step = w * 3
         msg.data = array.array('B', bgr.tobytes())
-        msg.header.frame_id = f'tactile_{self._serial}_optical_frame'
+        msg.header.frame_id = f'tactile_{self._serial}_depth_frame'
         seconds, nanoseconds = divmod(snapshot.timestamp_ns, 1_000_000_000)
         msg.header.stamp.sec = seconds
         msg.header.stamp.nanosec = nanoseconds

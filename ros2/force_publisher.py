@@ -118,7 +118,7 @@ class ForcePublisher(Node):
                                 dtype=np.float32).reshape(h, w)
 
         header = self.get_clock().now().to_msg()
-        frame = f'tactile_{self._serial}_optical_frame'
+        frame = f'tactile_{self._serial}_depth_frame'
 
         # Force field: pack normal+shear into 32FC3
         force_rgb = np.zeros((h, w, 3), dtype=np.float32)

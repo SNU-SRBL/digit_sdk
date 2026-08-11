@@ -11,10 +11,6 @@ imgw: 240
 raw_imgh: 320
 raw_imgw: 240
 framerate: 60
-# Optical frame transform (DIGIT base → optical center)
-optical_frame:
-  optical_rpy: [0.0, 0.0175, 0.0]
-  optical_xyz: [0.0171, 0.0, 0.0176]
 # Force Estimation (Sparsh)
 force:
   enable_force: false

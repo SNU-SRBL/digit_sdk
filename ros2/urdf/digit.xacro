@@ -2,7 +2,12 @@
 
 <xacro:macro name="digit_sensor"
              params="serial">
-  <!-- DIGIT sensor body (realsense-style: mesh origin hardcoded, optical frame offset from driver YAML) -->
+  <!-- DIGIT sensor body: mesh origin hardcoded; optical and depth frames are
+       fixed joints defined here. Depth frame is the camera frame used by
+       depth/pointcloud publishers; optical frame is the vendor finger_pose
+       matching frame. Offsets are w.r.t. the digit mesh frame, so they are
+       parented to tactile_${serial}_mesh_frame, which mirrors the visual
+       origin rotation applied to the STL mesh. -->
   <link name="tactile_${serial}_base_link">
     <visual>
       <geometry>
@@ -26,8 +31,26 @@
       <inertia ixx="1.4702815e-06" ixy="0.0000000e+00" ixz="0.0000000e+00"
                iyx="0.0000000e+00" iyy="3.8502616e-06" iyz="0.0000000e+00"
                izx="0.0000000e+00" izy="0.0000000e+00" izz="3.8502616e-06"/>
-    </inertial>
+      </inertial>
   </link>
+  <link name="tactile_${serial}_mesh_frame"/>
+  <joint name="mesh_${serial}" type="fixed">
+    <parent link="tactile_${serial}_base_link"/>
+    <child link="tactile_${serial}_mesh_frame"/>
+    <origin rpy="1.5708 0 1.5708" xyz="0 0 0"/>
+  </joint>
+  <link name="tactile_${serial}_optical_frame"/>
+  <joint name="optical_${serial}" type="fixed">
+    <parent link="tactile_${serial}_mesh_frame"/>
+    <child link="tactile_${serial}_optical_frame"/>
+    <origin xyz="0.0 -0.004787 0.016802" rpy="0.01745329252 0.0 0.0"/>
+  </joint>
+  <link name="tactile_${serial}_depth_frame"/>
+  <joint name="depth_optical_${serial}" type="fixed">
+    <parent link="tactile_${serial}_mesh_frame"/>
+    <child link="tactile_${serial}_depth_frame"/>
+    <origin xyz="0.0 0.017475 0.017191" rpy="0.01745329252 0.0 0.0"/>
+  </joint>
 </xacro:macro>
 
 </robot>
