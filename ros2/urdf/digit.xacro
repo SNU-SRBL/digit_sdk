@@ -5,9 +5,9 @@
   <!-- DIGIT sensor body: mesh origin hardcoded; optical and depth frames are
        fixed joints defined here. Depth frame is the camera frame used by
        depth/pointcloud publishers; optical frame is the vendor finger_pose
-       matching frame. Offsets are w.r.t. the digit mesh frame, so they are
-       parented to tactile_${serial}_mesh_frame, which mirrors the visual
-       origin rotation applied to the STL mesh. -->
+       matching frame. Offsets are composed base-frame values, so optical and
+       depth are parented directly to tactile_${serial}_base_link; the empty
+       mesh_frame TF parent is removed. -->
   <link name="tactile_${serial}_base_link">
     <visual>
       <geometry>
@@ -33,23 +33,17 @@
                izx="0.0000000e+00" izy="0.0000000e+00" izz="3.8502616e-06"/>
       </inertial>
   </link>
-  <link name="tactile_${serial}_mesh_frame"/>
-  <joint name="mesh_${serial}" type="fixed">
-    <parent link="tactile_${serial}_base_link"/>
-    <child link="tactile_${serial}_mesh_frame"/>
-    <origin rpy="1.5708 0 1.5708" xyz="0 0 0"/>
-  </joint>
   <link name="tactile_${serial}_optical_frame"/>
   <joint name="optical_${serial}" type="fixed">
-    <parent link="tactile_${serial}_mesh_frame"/>
+    <parent link="tactile_${serial}_base_link"/>
     <child link="tactile_${serial}_optical_frame"/>
-    <origin xyz="0.0 -0.004787 0.016802" rpy="0.01745329252 0.0 0.0"/>
+    <origin xyz="0.016802 0.0 -0.004787" rpy="1.588253 0.0 1.5708"/>
   </joint>
   <link name="tactile_${serial}_depth_frame"/>
   <joint name="depth_optical_${serial}" type="fixed">
-    <parent link="tactile_${serial}_mesh_frame"/>
+    <parent link="tactile_${serial}_base_link"/>
     <child link="tactile_${serial}_depth_frame"/>
-    <origin xyz="0.0 0.017475 0.017191" rpy="0.01745329252 0.0 0.0"/>
+    <origin xyz="0.017191 0.0 0.017475" rpy="1.588253 0.0 1.5708"/>
   </joint>
 </xacro:macro>
 
