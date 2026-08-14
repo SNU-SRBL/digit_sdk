@@ -1,4 +1,5 @@
-"""Multi-sensor production depth scheduling.
+"""
+Multi-sensor production depth scheduling.
 
 Camera capture remains isolated in one process per sensor.  This engine reads
 stable camera snapshots, keeps only each sensor's latest frame, executes one
@@ -229,7 +230,7 @@ class ProcessingEngine:
     def process_frames_sync(
         self, frames: Mapping[str, np.ndarray]
     ) -> Dict[str, DepthFrame]:
-        """Synchronous inference helper for tests and diagnostics."""
+        """Run synchronous inference for tests and diagnostics."""
         if self._estimator is None:
             return {}
         timestamp_ns = time.time_ns()

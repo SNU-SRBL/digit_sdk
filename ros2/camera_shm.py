@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Camera process: reads DIGIT frames, writes them to shared memory.
+"""
+Camera process: reads DIGIT frames, writes them to shared memory.
 
 Plain Python (no rclpy, no DDS). Writes BGR→RGB frames plus metadata
 to a SharedMemory block named 'tactile_{serial}'.
@@ -53,7 +54,7 @@ def shm_size_for(camera: Camera) -> int:
 
 
 def run(serial: str, sensors_root: str, verbose: bool = False):
-    """Main capture loop. Writes frames to shared memory."""
+    """Run the main capture loop; writes frames to shared memory."""
     shm_name = f"tactile_{serial}"
 
     # Create camera first — SHM size depends on resolution

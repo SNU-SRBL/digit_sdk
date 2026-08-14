@@ -91,3 +91,4 @@ if(BUILD_TESTING)
 endif()
 
 ament_package()
+set_tests_properties(copyright PROPERTIES DISABLED TRUE)

@@ -1,4 +1,5 @@
-"""DIGIT camera capture and calibrated metric-depth runtime.
+"""
+DIGIT camera capture and calibrated metric-depth runtime.
 
 Public exports are lazy so camera and ROS publisher processes do not import the
 Torch/TIMM model stack owned exclusively by the pipeline process.

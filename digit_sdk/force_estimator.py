@@ -22,18 +22,21 @@ from .temporal_buffer import TemporalBuffer
 
 
 def _load_encoder_checkpoint(checkpoint_path: str) -> Dict[str, torch.Tensor]:
-    """Load encoder weights from Lightning checkpoint.
-    
+    """
+    Load encoder weights from Lightning checkpoint.
+
     Args:
         checkpoint_path: Path to .ckpt file
-        
-    Returns:
-        OrderedDict of model weights with 'student_encoder.backbone.' prefix removed
+
+    Returns
+    -------
+    OrderedDict of model weights with 'student_encoder.backbone.' prefix removed
+
     """
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state_dict = checkpoint['model']
-    
+
     # Remove 'student_encoder.backbone.' prefix
     cleaned_state_dict = {}
     prefix = 'student_encoder.backbone.'
@@ -41,7 +44,7 @@ def _load_encoder_checkpoint(checkpoint_path: str) -> Dict[str, torch.Tensor]:
         if key.startswith(prefix):
             new_key = key[len(prefix):]
             cleaned_state_dict[new_key] = value
-    
+
     return cleaned_state_dict
 
 
@@ -79,8 +82,8 @@ def _load_symbol_from_file(module_key: str, file_path: str, symbol_name: str):
 
 class SparshEncoder(nn.Module):
     """Sparsh-native ViT-base encoder wrapper for force estimation."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  img_size: int = 224,
                  patch_size: int = 16,
                  in_chans: int = 6,  # Temporal pair (2 RGB frames)
@@ -120,15 +123,18 @@ class SparshEncoder(nn.Module):
 
         self.feature_layers = [2, 5, 8, 11]
         self.intermediate_features: list[torch.Tensor] = []
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass with intermediate feature extraction.
-        
+        """
+        Forward pass with intermediate feature extraction.
+
         Args:
             x: [B, 6, 224, 224] input tensor (temporal pair)
-            
-        Returns:
-            [B, N, C] final features
+
+        Returns
+        -------
+        [B, N, C] final features
+
         """
         x = self.model.prepare_tokens_with_masks(x)
 
@@ -139,7 +145,7 @@ class SparshEncoder(nn.Module):
                 self.intermediate_features.append(x)
 
         return x
-    
+
     def get_intermediate_features(self) -> list:
         """Get intermediate features from specified layers."""
         return self.intermediate_features
@@ -161,7 +167,7 @@ class SparshEncoder(nn.Module):
 
 class ForceFieldDecoder(nn.Module):
     """Sparsh-equivalent force-field decoder for inference."""
-    
+
     def __init__(
         self,
         image_size: Tuple[int, int, int] = (3, 224, 224),
@@ -221,16 +227,22 @@ class ForceFieldDecoder(nn.Module):
         self.fusions = nn.ModuleList([fusion_cls(out_dim) for _ in reassemble_s])
         self.probe = head_cls(features=out_dim)
 
-    def forward(self, intermediate_features: Union[list, Dict[str, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Decode intermediate features to force fields.
-        
+    def forward(
+        self,
+        intermediate_features: Union[list, Dict[str, torch.Tensor]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Decode intermediate features to force fields.
+
         Args:
             intermediate_features: Dict keyed by {'t2','t5','t8','t11'} or
                 list ordered as [2, 5, 8, 11] with [B, N+1, C] tensors.
-            
-        Returns:
-            normal: [B, 1, 224, 224]
-            shear: [B, 2, 224, 224]
+
+        Returns
+        -------
+        normal: [B, 1, 224, 224]
+        shear: [B, 2, 224, 224]
+
         """
         if isinstance(intermediate_features, dict):
             encoder_activations = {k: v for k, v in intermediate_features.items()}
@@ -264,11 +276,12 @@ class ForceFieldDecoder(nn.Module):
 
 
 class ForceEstimator:
-    """Main interface for force estimation using Sparsh models.
-    
+    """
+    Main interface for force estimation using Sparsh models.
+
     Supports both force field (dense heatmaps) and force vector (aggregated) outputs.
     """
-    
+
     def __init__(self,
                  encoder_path: str,
                  decoder_path: str,
@@ -277,10 +290,12 @@ class ForceEstimator:
                  device: str = 'cuda',
                  force_field_baseline: bool = False,
                  force_vector_scale: Optional[Union[list, tuple]] = None):
-        """Initialize force estimator.
-        
+        """
+        Initialize force estimator.
+
         Args:
-            encoder_path: Path to Sparsh encoder checkpoint (.ckpt)
+        ----
+        encoder_path: Path to Sparsh encoder checkpoint (.ckpt)
             decoder_path: Path to force field decoder weights (.pth)
             temporal_stride: Frames between temporal pair (default: 5)
             bg_offset: Background subtraction offset (default: 0.5)
@@ -288,7 +303,9 @@ class ForceEstimator:
             force_field_baseline: If True, compute/save a per-pixel background
                 template during `load_background()` and subtract it from
                 subsequent `force_field` outputs at runtime. Default: False.
-            force_vector_scale: Per-axis scale to convert normalized `force_vector` -> physical units (N).
+        force_vector_scale: Per-axis scale to convert normalized
+            `force_vector` -> physical units (N).
+
         """
         # Validate paths
         if not os.path.exists(encoder_path):
@@ -301,17 +318,17 @@ class ForceEstimator:
                 f"Sparsh decoder not found at {decoder_path}. "
                 f"Run: python scripts/download_models.py"
             )
-        
+
         # Setup device
         self.device = device
         if device == 'cuda' and not torch.cuda.is_available():
             warnings.warn("CUDA not available, falling back to CPU")
             self.device = 'cpu'
-        
+
         # Initialize models
         self.encoder = SparshEncoder()
         self.decoder = ForceFieldDecoder()
-        
+
         # Load pretrained weights
         print(f"Loading encoder from {encoder_path}...")
         encoder_weights = _load_encoder_checkpoint(encoder_path)
@@ -323,7 +340,7 @@ class ForceEstimator:
                 f"unexpected_keys={encoder_probe.unexpected_keys}"
             )
         self.encoder.model.load_state_dict(encoder_weights, strict=True)
-        
+
         print(f"Loading decoder from {decoder_path}...")
         decoder_weights = torch.load(decoder_path, map_location='cpu', weights_only=True)
         # Remove 'model_task.' prefix if present
@@ -343,13 +360,13 @@ class ForceEstimator:
                 f"unexpected_keys={decoder_probe.unexpected_keys}"
             )
         self.decoder.load_state_dict(cleaned_decoder, strict=True)
-        
+
         # Move to device
         self.encoder = self.encoder.to(self.device)
         self.decoder = self.decoder.to(self.device)
         self.encoder.eval()
         self.decoder.eval()
-        
+
         # Preprocessing
         self.bg_offset = bg_offset
         self.background = None
@@ -360,7 +377,11 @@ class ForceEstimator:
 
         # Per-axis force scale (normalized model units -> physical units (N)).
         # Per-axis scale mapping normalized model units -> physical units (N)
-        self.force_vector_scale = np.array(force_vector_scale if force_vector_scale is not None else [1.0, 1.0, 1.0], dtype=float)
+        self.force_vector_scale = np.array(
+            force_vector_scale if force_vector_scale is not None
+            else [1.0, 1.0, 1.0],
+            dtype=float,
+        )
 
         # Temporal buffer
         self.temporal_stride = temporal_stride
@@ -372,16 +393,19 @@ class ForceEstimator:
         self.force_field_baseline_template = None
 
         print(f"Force estimator initialized on {self.device}")
-    
+
     def load_background(self, background: np.ndarray):
-        """Load background image for subtraction and compute no-contact baseline.
+        """
+        Load background image for subtraction and compute no-contact baseline.
 
         The baseline is computed by running the model on a background pair and
         saved to `self.force_vector_baseline`. This baseline is subtracted from
         `force_vector` outputs to remove sensor/model bias.
 
         Args:
-            background: [H, W, 3] BGR background image (uint8)
+        ----
+        background: [H, W, 3] BGR background image (uint8)
+
         """
         self.background = background.copy()
 
@@ -417,20 +441,23 @@ class ForceEstimator:
             # If baseline computation fails for any reason, default to zero baseline
             self.force_vector_baseline = {'fx': 0.0, 'fy': 0.0, 'fz': 0.0}
             self.force_field_baseline_template = None
-    
+
     def _preprocess(self, img_t: np.ndarray, img_t_minus: np.ndarray) -> torch.Tensor:
-        """Preprocess temporal pair for force estimation.
-        
+        """
+        Preprocess temporal pair for force estimation.
+
         Args:
             img_t: [H, W, 3] BGR image at time t (uint8)
             img_t_minus: [H, W, 3] BGR image at time t-stride (uint8)
-            
-        Returns:
-            [1, 6, 224, 224] preprocessed tensor
+
+        Returns
+        -------
+        [1, 6, 224, 224] preprocessed tensor
+
         """
         if self.background is None:
             raise ValueError("Background not loaded. Call load_background() first.")
-        
+
         # Background subtraction with offset
         def subtract_bg(img, bg, offset):
             diff = img.astype(np.int32) - bg.astype(np.int32)
@@ -438,72 +465,78 @@ class ForceEstimator:
             diff = np.clip(diff, 0.0, 1.0)
             diff = (diff * 255.0).astype(np.uint8)
             return diff
-        
+
         img_t_diff = subtract_bg(img_t, self.background, self.bg_offset)
         img_t_minus_diff = subtract_bg(img_t_minus, self.background, self.bg_offset)
-        
+
         # Convert to RGB PIL images (input frames from camera are BGR)
         # Sparsh expects RGB images — convert from BGR -> RGB first.
         img_t_rgb = cv2.cvtColor(img_t_diff, cv2.COLOR_BGR2RGB)
         img_t_minus_rgb = cv2.cvtColor(img_t_minus_diff, cv2.COLOR_BGR2RGB)
         img_t_pil = Image.fromarray(img_t_rgb).convert("RGB")
         img_t_minus_pil = Image.fromarray(img_t_minus_rgb).convert("RGB")
-        
+
         # Resize and convert to tensor
         tensor_t = self.transform(img_t_pil)         # [3, 224, 224]
         tensor_t_minus = self.transform(img_t_minus_pil)  # [3, 224, 224]
-        
+
         # Temporal concatenation
         input_tensor = torch.cat([tensor_t, tensor_t_minus], dim=0)  # [6, 224, 224]
-        
+
         return input_tensor.unsqueeze(0)  # [1, 6, 224, 224]
-    
+
     def estimate(self,
                  image: np.ndarray,
-                 timestamp: Optional[float] = None) -> Optional[Dict[str, Union[np.ndarray, float]]]:
-        """Estimate force field and vector from image.
-        
+                 timestamp: Optional[float] = None
+                 ) -> Optional[Dict[str, Union[np.ndarray, float]]]:
+        """
+        Estimate force field and vector from image.
+
         Args:
             image: [H, W, 3] BGR image (uint8)
             timestamp: Optional timestamp for temporal tracking
-            
-        Returns:
-            Dictionary with:
-            - 'force_field': {'normal': [224, 224], 'shear': [224, 224, 2]} or None if buffer not ready
-            - 'force_vector': {'fx': float, 'fy': float, 'fz': float} or None if buffer not ready
+
+        Returns
+        -------
+        Dictionary with:
+        - 'force_field': {'normal': [224, 224], 'shear': [224, 224, 2]}
+          or None if buffer not ready
+        - 'force_vector': {'fx': float, 'fy': float, 'fz': float}
+          or None if buffer not ready
+
         """
         # Add to temporal buffer
         self.temporal_buffer.add(image, timestamp)
-        
+
         # Check if buffer is ready
         if not self.temporal_buffer.is_ready():
             return None
-        
+
         # Get temporal pair
         frame_pair = self.temporal_buffer.get_pair(stride=self.temporal_stride)
         if frame_pair is None:
             return None
-        
+
         img_t, img_t_minus = frame_pair
-        
+
         # Preprocess
         input_tensor = self._preprocess(img_t, img_t_minus)
         input_tensor = input_tensor.to(self.device)
-        
+
         # Inference
         with torch.no_grad():
             try:
                 # Encoder
                 _ = self.encoder(input_tensor)
                 intermediate_features = self.encoder.get_intermediate_features()
-                
+
                 # Decoder
                 normal, shear = self.decoder(intermediate_features)
-                
+
                 # Move to CPU and convert to numpy
                 normal = normal.squeeze(0).squeeze(0).cpu().numpy()  # [224, 224]
                 shear = shear.squeeze(0).permute(1, 2, 0).cpu().numpy()  # [224, 224, 2]
-                
+
             except RuntimeError as e:
                 if "out of memory" in str(e):
                     warnings.warn("CUDA OOM, falling back to CPU")
@@ -514,9 +547,12 @@ class ForceEstimator:
                     return self.estimate(image, timestamp)
                 else:
                     raise
-        
+
         # Optionally subtract per-pixel force_field baseline template
-        if getattr(self, 'force_field_baseline_enabled', False) and self.force_field_baseline_template is not None:
+        if (
+            getattr(self, 'force_field_baseline_enabled', False)
+            and self.force_field_baseline_template is not None
+        ):
             try:
                 normal = normal - self.force_field_baseline_template['normal']
                 shear = shear - self.force_field_baseline_template['shear']
@@ -525,7 +561,6 @@ class ForceEstimator:
                 pass
 
         # Aggregate force vector
-        H, W = 224, 224
         fz = float(np.mean(normal))
         fx = float(np.mean(shear[:, :, 0]))
         fy = float(np.mean(shear[:, :, 1]))

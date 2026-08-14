@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Force publisher: reads SHM tactile_{serial}_force, publishes force DDS.
+"""
+Force publisher: reads SHM tactile_{serial}_force, publishes force DDS.
 
 One process per sensor — independent GIL.  Reads force_field (normal+shear)
 and force_vector from shared memory written by pipeline_node.

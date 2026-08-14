@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-mm_to_ppmm.py
+mm_to_ppmm.py.
 
-This script measures the pixels-per-millimeter (ppmm) of a camera sensor by capturing live video frames and allowing the user to click two points on the image to measure the pixel distance.
+This script measures the pixels-per-millimeter (ppmm) of a camera sensor by
+capturing live video frames and allowing the user to click two points on the
+image to measure the pixel distance.
 The user must know the physical distance between these two points in millimeters.
 
 Borrows from https://github.com/vocdex/digit-depth/blob/main/scripts/mm_to_pix.py
@@ -11,7 +13,8 @@ DO NOT PRESS THE GEL WITH THE SHARP POINTS OF THE CALIPER.
 This will damage the sensor. Try to press the gel with the flat side of the caliper.
 
 Usage:
-    python mm_to_ppmm.py --serial SERIAL --distance_mm DISTANCE_MM [--frames N] [--sensors_root SENSORS_ROOT]
+    python mm_to_ppmm.py --serial SERIAL --distance_mm DISTANCE_MM
+    [--frames N] [--sensors_root SENSORS_ROOT]
 """
 import argparse
 import os
@@ -21,6 +24,7 @@ from digit_sdk.camera import Camera
 from digit_sdk.utils import load_config
 
 DEFAULT_SENSORS_ROOT = os.path.join(os.path.dirname(__file__), "../sensors")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -51,7 +55,7 @@ def main():
     # Load sensor configuration
     sensor_dir = os.path.join(args.sensors_root, args.serial)
     config_path = os.path.join(sensor_dir, f"{args.serial}.yaml")
-    config = load_config(config_path=config_path)
+    load_config(config_path=config_path)
     # Camera will use all config fields internally
 
     # Connect to the sensor

@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 
@@ -29,7 +28,7 @@ def plot_gradients(fig, ax, gx, gy=None, mask=None, mode="rgb", **kwargs):
         gx = gx[..., 0]
     elif gy is None:
         raise ValueError("gy must be provided if gx is not a dict or [H, W, 2] array")
-    
+
     if mode == "rgb":
         # Plot the gradient in red and blue
         grad_range = kwargs.get("grad_range", 3.0)
@@ -62,14 +61,17 @@ def plot_gradients(fig, ax, gx, gy=None, mask=None, mode="rgb", **kwargs):
 
 
 def force_field_to_rgb(normal, shear):
-    """Convert force field arrays to RGB image using (R,G,B)=(Fx,Fy,Fz).
+    """
+    Convert force field arrays to RGB image using (R,G,B)=(Fx,Fy,Fz).
 
     Args:
         normal: np.array [H, W]; normal force component (Fz), expected in [0, 1].
         shear: np.array [H, W, 2]; shear components (Fx, Fy), expected in [-1, 1].
 
-    Returns:
-        np.array [H, W, 3] uint8 RGB image.
+    Returns
+    -------
+    np.array [H, W, 3] uint8 RGB image.
+
     """
     normal_arr = np.asarray(normal, dtype=np.float32)
     shear_arr = np.asarray(shear, dtype=np.float32)
@@ -88,39 +90,42 @@ def force_field_to_rgb(normal, shear):
 def visualize_force_field(normal, shear, overlay_image=None, alpha=0.6):
     """
     Visualize force field as RGB heatmap.
-    
+
     Args:
         normal: np.array [H, W]; normal force component (Fz).
         shear: np.array [H, W, 2]; shear force components (Fx, Fy).
         overlay_image: np.array [H, W, 3] or None; optional background image to overlay on.
         alpha: float; transparency for overlay (0=fully transparent, 1=fully opaque).
-    
-    Returns:
-        np.array [H, W, 3] uint8; RGB visualization of force field.
+
+    Returns
+    -------
+    np.array [H, W, 3] uint8; RGB visualization of force field.
+
     """
     force_viz = force_field_to_rgb(normal, shear)
-    
+
     # Overlay on image if provided
     if overlay_image is not None:
         # Resize force field to match overlay image if needed
         if force_viz.shape[:2] != overlay_image.shape[:2]:
             force_viz = cv2.resize(force_viz, (overlay_image.shape[1], overlay_image.shape[0]))
-        
+
         # Convert overlay to RGB if needed
         if len(overlay_image.shape) == 2:
             overlay_image = cv2.cvtColor(overlay_image, cv2.COLOR_GRAY2RGB)
-        
+
         # Blend images
         force_viz = cv2.addWeighted(overlay_image, 1 - alpha, force_viz, alpha, 0)
-    
+
     return force_viz
 
 
-def visualize_force_vector(fx, fy, fz, image, arrow_scale=50.0, arrow_color=(0, 255, 0), 
-                          arrow_thickness=2, show_magnitude=True):
+def visualize_force_vector(
+        fx, fy, fz, image, arrow_scale=50.0, arrow_color=(0, 255, 0),
+        arrow_thickness=2, show_magnitude=True):
     """
     Visualize force vector as arrow overlay on image.
-    
+
     Args:
         fx: float; horizontal shear force component.
         fy: float; vertical shear force component.
@@ -130,36 +135,41 @@ def visualize_force_vector(fx, fy, fz, image, arrow_scale=50.0, arrow_color=(0, 
         arrow_color: tuple (B, G, R); color for the arrow.
         arrow_thickness: int; thickness of the arrow line.
         show_magnitude: bool; whether to show magnitude text.
-    
-    Returns:
-        np.array [H, W, 3] uint8; image with force vector overlay.
+
+    Returns
+    -------
+    np.array [H, W, 3] uint8; image with force vector overlay.
+
     """
     # Copy image to avoid modifying original
     if len(image.shape) == 2:
         viz_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     else:
         viz_image = image.copy()
-    
+
     h, w = viz_image.shape[:2]
     center = (w // 2, h // 2)
-    
+
     # Calculate arrow endpoint
     # Note: OpenCV coordinates are (x, y) where y increases downward
     arrow_end_x = int(center[0] + fx * arrow_scale)
     arrow_end_y = int(center[1] + fy * arrow_scale)  # fy positive = downward
     arrow_end = (arrow_end_x, arrow_end_y)
-    
+
     # Draw arrow for in-plane forces (fx, fy)
     if abs(fx) > 0.01 or abs(fy) > 0.01:  # Only draw if significant
-        cv2.arrowedLine(viz_image, center, arrow_end, arrow_color, 
-                       arrow_thickness, tipLength=0.3)
-    
+        cv2.arrowedLine(
+            viz_image, center, arrow_end, arrow_color,
+            arrow_thickness, tipLength=0.3,
+        )
+
     # Draw circle for normal force (fz) - size proportional to magnitude
     normal_radius = int(abs(fz) * arrow_scale)
     if normal_radius > 5:
-        normal_color = (0, 0, 255) if fz > 0 else (255, 0, 0)  # Red for positive, blue for negative
+        # Red for positive, blue for negative
+        normal_color = (0, 0, 255) if fz > 0 else (255, 0, 0)
         cv2.circle(viz_image, center, normal_radius, normal_color, 2)
-    
+
     # Add text showing force magnitudes
     if show_magnitude:
         magnitude = np.sqrt(fx**2 + fy**2 + fz**2)
@@ -169,12 +179,16 @@ def visualize_force_vector(fx, fy, fz, image, arrow_scale=50.0, arrow_color=(0, 
             f"Fz: {fz:+.3f}",
             f"|F|: {magnitude:.3f}"
         ]
-        
+
         y_offset = 30
         for i, line in enumerate(text_lines):
-            cv2.putText(viz_image, line, (10, y_offset + i * 25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(viz_image, line, (10, y_offset + i * 25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
-    
+            cv2.putText(
+                viz_image, line, (10, y_offset + i * 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
+            )
+            cv2.putText(
+                viz_image, line, (10, y_offset + i * 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1,
+            )
+
     return viz_image

@@ -227,7 +227,7 @@ def finalize_dataset(
     output_records = []
 
     reference_relative = Path("background/reference.png")
-    reference_digest = _copy_checked(
+    _ = _copy_checked(
         background_root / background["path"],
         output_root / reference_relative,
         background.get("image_sha256"),

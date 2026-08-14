@@ -1,9 +1,11 @@
 import os
 import yaml
 
+
 def load_config(serial=None, config_path=None, sensors_root=None, default_config=None):
     """
     Load sensor configuration by serial or config_path.
+
     Priority: config_path > serial > default_config
 
     Args:
@@ -12,8 +14,10 @@ def load_config(serial=None, config_path=None, sensors_root=None, default_config
         sensors_root (str): Root directory containing sensors/<serial>/config.yaml.
         default_config (str): Path to fallback config.
 
-    Returns:
-        dict: Loaded configuration.
+    Returns
+    -------
+    dict: Loaded configuration.
+
     """
     if config_path is not None:
         path = config_path
@@ -22,7 +26,10 @@ def load_config(serial=None, config_path=None, sensors_root=None, default_config
     elif default_config is not None:
         path = default_config
     else:
-        raise ValueError("Must provide config_path, or serial and sensors_root, or default_config.")
+        raise ValueError(
+            "Must provide config_path, or serial and sensors_root, "
+            "or default_config."
+        )
 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")

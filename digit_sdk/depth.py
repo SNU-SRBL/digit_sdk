@@ -1,4 +1,5 @@
-"""Production metric-depth estimator for calibrated DIGIT sensors.
+"""
+Production metric-depth estimator for calibrated DIGIT sensors.
 
 The estimator owns one frozen encoder and one decoder per sensor serial.  Its
 public contract is batch-first and algorithm-neutral: BGR images in, raw
@@ -313,6 +314,7 @@ class DepthEstimator:
             batched_decoder = vmap(
                 call_decoder, in_dims=(0, 0, 0)
             )
+
             def full_batch(images):
                 activations = self._encoder(images)
                 batched_activations = tuple(
@@ -514,5 +516,5 @@ class DepthEstimator:
         return results
 
     def estimate(self, serial: str, frame: np.ndarray) -> np.ndarray:
-        """Convenience wrapper for one frame; production scheduling is batched."""
+        """Provide a convenience wrapper for one frame; scheduling is batched."""
         return self.estimate_batch({serial: frame})[serial]

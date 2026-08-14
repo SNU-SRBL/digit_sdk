@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Raw publisher: reads SHM, publishes /tactile/{serial}/raw over DDS.
+"""
+Raw publisher: reads SHM, publishes /tactile/{serial}/raw over DDS.
 
 One process per sensor — independent Python GIL for each camera.
 Launched by multi_sensor_tactile_streamer.launch.py with serial:=... param.
@@ -30,7 +31,8 @@ _BE_QOS = QoSProfile(
 
 
 class RawPublisher(Node):
-    """Reads a single sensor's SHM block, publishes BGR raw frames over DDS.
+    """
+    Reads a single sensor's SHM block, publishes BGR raw frames over DDS.
 
     One instance per camera — no GIL contention with other sensors.
     """

@@ -1,4 +1,5 @@
-"""Single-writer SHM layouts with bounded seqlock readers.
+"""
+Single-writer SHM layouts with bounded seqlock readers.
 
 Generation zero means no committed payload. Odd generations mean a writer is
 active; even generations identify stable commits. Readers always return owned
@@ -28,7 +29,8 @@ _T = TypeVar("_T")
 
 
 def open_shared_memory(name: str) -> shared_memory.SharedMemory:
-    """Attach without claiming cleanup ownership on Python 3.10.
+    """
+    Attach without claiming cleanup ownership on Python 3.10.
 
     Writer processes own unlinking.  Without unregistering, an attached reader
     can unlink the writer's live segment when the reader exits.

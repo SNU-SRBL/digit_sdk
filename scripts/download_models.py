@@ -9,19 +9,16 @@ This script downloads the required Sparsh models:
 Models are saved to the models/ directory.
 """
 
-import os
 import sys
 import argparse
 from pathlib import Path
-from typing import Optional
 import hashlib
 
 try:
-    from huggingface_hub import hf_hub_download, HfApi
-    from tqdm import tqdm
+    from huggingface_hub import hf_hub_download
 except ImportError:
     print("Error: Required packages not found.")
-    print("Please install: pip install huggingface_hub tqdm")
+    print("Please install: pip install huggingface_hub")
     sys.exit(1)
 
 
@@ -43,14 +40,17 @@ MODELS = {
 
 
 def compute_file_hash(filepath: Path, algorithm: str = "sha256") -> str:
-    """Compute hash of a file for verification.
-    
+    """
+    Compute hash of a file for verification.
+
     Args:
         filepath: Path to file
         algorithm: Hash algorithm (sha256, md5, etc.)
-        
-    Returns:
-        Hex digest of file hash
+
+    Returns
+    -------
+    Hex digest of file hash
+
     """
     hash_obj = hashlib.new(algorithm)
     with open(filepath, "rb") as f:
@@ -60,21 +60,24 @@ def compute_file_hash(filepath: Path, algorithm: str = "sha256") -> str:
 
 
 def verify_model_file(filepath: Path) -> bool:
-    """Verify that a downloaded model file is valid.
-    
+    """
+    Verify that a downloaded model file is valid.
+
     Args:
         filepath: Path to model file
-        
-    Returns:
-        True if file appears valid (exists, non-empty, loadable header)
+
+    Returns
+    -------
+    True if file appears valid (exists, non-empty, loadable header)
+
     """
     if not filepath.exists():
         return False
-    
+
     if filepath.stat().st_size == 0:
         print(f"  ⚠ File is empty: {filepath}")
         return False
-    
+
     # Basic check: try to read first few bytes to verify it's not corrupted
     try:
         with open(filepath, "rb") as f:
@@ -86,7 +89,7 @@ def verify_model_file(filepath: Path) -> bool:
     except Exception as e:
         print(f"  ⚠ Cannot read file: {e}")
         return False
-    
+
     return True
 
 
@@ -97,20 +100,23 @@ def download_model(
     models_dir: Path,
     force: bool = False,
 ) -> bool:
-    """Download a model from HuggingFace Hub.
-    
+    """
+    Download a model from HuggingFace Hub.
+
     Args:
         repo_id: HuggingFace repository ID
         filename: Filename in the repository
         local_filename: Local filename to save as
         models_dir: Directory to save models
         force: Force re-download even if file exists
-        
-    Returns:
-        True if download successful, False otherwise
+
+    Returns
+    -------
+    True if download successful, False otherwise
+
     """
     local_path = models_dir / local_filename
-    
+
     # Check if already exists
     if local_path.exists() and not force:
         if verify_model_file(local_path):
@@ -119,11 +125,11 @@ def download_model(
             print(f"    Size: {file_size_mb:.1f} MB")
             return True
         else:
-            print(f"  ⚠ Existing file appears corrupted, re-downloading...")
+            print("  ⚠ Existing file appears corrupted, re-downloading...")
             local_path.unlink()
-    
+
     print(f"  → Downloading from {repo_id}/{filename}...")
-    
+
     try:
         # Download to cache first
         cached_path = hf_hub_download(
@@ -132,25 +138,25 @@ def download_model(
             cache_dir=None,  # Use default cache
             resume_download=True,  # Resume if interrupted
         )
-        
+
         # Copy to models directory
         import shutil
         shutil.copy2(cached_path, local_path)
-        
+
         # Verify download
         if not verify_model_file(local_path):
-            print(f"  ✗ Download verification failed")
+            print("  ✗ Download verification failed")
             return False
-        
+
         file_size_mb = local_path.stat().st_size / (1024 * 1024)
         print(f"  ✓ Downloaded: {local_filename} ({file_size_mb:.1f} MB)")
-        
+
         # Compute hash for reference
         file_hash = compute_file_hash(local_path)
         print(f"    SHA256: {file_hash[:16]}...")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"  ✗ Download failed: {e}")
         if local_path.exists():
@@ -159,13 +165,16 @@ def download_model(
 
 
 def check_models_exist(models_dir: Path) -> dict:
-    """Check which models already exist.
-    
+    """
+    Check which models already exist.
+
     Args:
         models_dir: Directory containing models
-        
-    Returns:
-        Dict mapping model keys to existence status
+
+    Returns
+    -------
+    Dict mapping model keys to existence status
+
     """
     status = {}
     for key, config in MODELS.items():
@@ -182,10 +191,10 @@ def main():
 Examples:
   # Download all models
   python scripts/download_models.py
-  
+
   # Force re-download even if files exist
   python scripts/download_models.py --force
-  
+
   # Download to custom directory
   python scripts/download_models.py --models-dir /path/to/models
         """,
@@ -206,9 +215,9 @@ Examples:
         action="store_true",
         help="Only check which models exist, don't download",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Determine models directory
     if args.models_dir:
         models_dir = args.models_dir
@@ -216,17 +225,17 @@ Examples:
         # Assume script is in scripts/ directory
         script_dir = Path(__file__).parent
         models_dir = script_dir.parent / "models"
-    
+
     models_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print("=" * 70)
     print("Sparsh Model Downloader for DIGIT SDK")
     print("=" * 70)
     print(f"\nModels directory: {models_dir.absolute()}\n")
-    
+
     # Check existing models
     existing = check_models_exist(models_dir)
-    
+
     if args.check_only:
         print("Model Status:")
         for key, config in MODELS.items():
@@ -235,14 +244,14 @@ Examples:
             print(f"           {config['local_filename']}")
         print()
         return
-    
+
     # Download models
     print("Downloading models...\n")
-    
+
     success_count = 0
     for key, config in MODELS.items():
         print(f"[{key.upper()}] {config['description']}")
-        
+
         success = download_model(
             repo_id=config["repo_id"],
             filename=config["filename"],
@@ -250,11 +259,11 @@ Examples:
             models_dir=models_dir,
             force=args.force,
         )
-        
+
         if success:
             success_count += 1
         print()
-    
+
     # Summary
     print("=" * 70)
     total = len(MODELS)

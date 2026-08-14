@@ -14,6 +14,7 @@ from digit_sdk.utils import load_config
 It supports both DIGIT cameras and generic V4L2 cameras.
 '''
 
+
 class Camera:
     """The camera class (synchronous, based on digit-interface pattern)."""
 
@@ -91,7 +92,8 @@ class Camera:
 
     @staticmethod
     def _is_corrupt(bgr: np.ndarray, threshold: float = 3.0) -> bool:
-        """Detect STM32 DMA tear: per-column step-discontinuity detector.
+        """
+        Detect STM32 DMA tear: per-column step-discontinuity detector.
 
         A tear is a horizontal line where pixel values jump instantaneously
         (no gradient). Each column independently scans all 239 row-pairs for
@@ -171,8 +173,9 @@ class Camera:
             print("Camera ready for use!")
 
     def get_image(self, flush=False):
-        """Get the latest image with automatic corruption detection and recovery.
-        
+        """
+        Get the latest image with automatic corruption detection and recovery.
+
         Returns None if frame is corrupt and recovery was triggered.
         Caller should retry on next frame.
         """
@@ -209,8 +212,9 @@ class Camera:
         return frame_copied
 
     def _recover(self, reason="unspecified"):
-        """STREAMOFF/STREAMON cycle via release()+connect().
-        
+        """
+        STREAMOFF/STREAMON cycle via release()+connect().
+
         Resets STM32 DMA state. connect() discards startup frames.
         """
         if self._recovery_started_at is None:
@@ -275,8 +279,8 @@ def resize_crop(img, imgw, imgh):
     elif cropped_imgh * imgw / imgh < cropped_imgw - 1e-8:
         extra_border_w = int(cropped_imgw - cropped_imgh * imgw / imgh)
     img = img[
-        border_size_x + extra_border_h : img.shape[0] - border_size_x,
-        border_size_y + extra_border_w : img.shape[1] - border_size_y,
+        border_size_x + extra_border_h: img.shape[0] - border_size_x,
+        border_size_y + extra_border_w: img.shape[1] - border_size_y,
     ]
     img = cv2.resize(img, (imgw, imgh))
     return img
@@ -298,7 +302,10 @@ class DigitHandler:
     @staticmethod
     def list_digits():
         if pyudev is None:
-            raise ImportError("pyudev is required for DigitHandler. Install with 'pip install pyudev'.")
+            raise ImportError(
+                "pyudev is required for DigitHandler. "
+                "Install with 'pip install pyudev'."
+            )
         context = pyudev.Context()
         digits = context.list_devices(subsystem="video4linux", ID_MODEL="DIGIT")
         return [DigitHandler._parse(device) for device in digits]

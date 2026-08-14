@@ -20,6 +20,8 @@ KIND_DIRECTORIES = {
     "ball": "images",
     "touch": "touches",
 }
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
