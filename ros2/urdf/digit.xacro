@@ -37,13 +37,18 @@
   <joint name="optical_${serial}" type="fixed">
     <parent link="tactile_${serial}_base_link"/>
     <child link="tactile_${serial}_optical_frame"/>
-    <origin xyz="0.016802 0.0 -0.004787" rpy="1.588253 0.0 1.5708"/>
+    <!-- +Z forward (REP-103 optical): measured base orientation (1.588253, 0, 1.5708)
+         rotated exactly -90deg about X -> (0.0175, 0, 1.5708), then -90deg about Z
+         to align image axes with depth_frame -> (0, 0.0175, 0) -->
+    <origin xyz="0.016802 0.0 -0.004787" rpy="0.0 0.0175 0.0"/>
   </joint>
   <link name="tactile_${serial}_depth_frame"/>
   <joint name="depth_optical_${serial}" type="fixed">
     <parent link="tactile_${serial}_base_link"/>
     <child link="tactile_${serial}_depth_frame"/>
-    <origin xyz="0.017191 0.0 0.017475" rpy="1.588253 0.0 1.5708"/>
+    <!-- Depth/PC frame: +Z forward (REP-103), image roll corrected by -90deg
+         about Z in the +Z-forward frame -> (0, 0.0175, 0) -->
+    <origin xyz="0.017191 0.0 0.017475" rpy="0.0 0.0175 0.0"/>
   </joint>
 </xacro:macro>
 
