@@ -47,6 +47,7 @@ class PipelineNode(Node):
         )
         self.declare_parameter("sensors_root", "../sensors")
         self.declare_parameter("model_device", "cuda")
+        self.declare_parameter("depth_backend", "auto")
         self.declare_parameter("depth_cutoff", 0.2)
         self.declare_parameter("rate", 60.0)
         self.declare_parameter("cpu_affinity", "")
@@ -67,6 +68,7 @@ class PipelineNode(Node):
             serials=serials,
             sensors_root=self.get_parameter("sensors_root").value,
             model_device=self.get_parameter("model_device").value,
+            depth_backend=self.get_parameter("depth_backend").value,
             depth_cutoff_mm=self.get_parameter("depth_cutoff").value,
         )
         if not self._engine.serials:

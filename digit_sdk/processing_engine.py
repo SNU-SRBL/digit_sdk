@@ -58,6 +58,7 @@ class ProcessingEngine:
         model_device: str = "cuda",
         depth_cutoff_mm: float = 0.1,
         shm_connect_timeout: float = 10.0,
+        depth_backend: str = "auto",
     ):
         if not serials:
             raise ValueError("at least one sensor serial is required")
@@ -76,7 +77,12 @@ class ProcessingEngine:
             serial for serial in self._configured_serials if serial in self._shms
         )
         self._estimator = (
-            DepthEstimator(self._serials, sensors_root, model_device)
+            DepthEstimator(
+                self._serials,
+                sensors_root,
+                model_device,
+                backend=depth_backend,
+            )
             if self._serials else None
         )
 

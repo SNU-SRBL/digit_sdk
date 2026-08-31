@@ -120,6 +120,9 @@ def launch_setup(context, *_args, **_kwargs):
     point_sample_mm = float(
         LaunchConfiguration("point_sample_mm").perform(context)
     )
+    shm_connect_timeout = float(
+        LaunchConfiguration("shm_connect_timeout").perform(context)
+    )
 
     affinity = _get_tactile_affinity()
     camera_cores = affinity.get("camera_shm", [0, 1, 2, 3])
@@ -203,6 +206,7 @@ def launch_setup(context, *_args, **_kwargs):
                     ),
                     "publish_depth": enable_depth,
                     "publish_pointcloud": enable_pointcloud,
+                    "shm_connect_timeout": shm_connect_timeout,
                     "ppmm": float(config.get("ppmm", 0.0)),
                     "point_sample_mm": point_sample_mm,
                 }],
@@ -257,6 +261,11 @@ def generate_launch_description():
             "point_sample_mm",
             default_value="0.2",
             description="Point-cloud sample spacing in mm; 0 requests every pixel",
+        ),
+        DeclareLaunchArgument(
+            "shm_connect_timeout",
+            default_value="30.0",
+            description="Seconds to wait for surface SHM to appear at startup",
         ),
         OpaqueFunction(function=launch_setup),
     ])

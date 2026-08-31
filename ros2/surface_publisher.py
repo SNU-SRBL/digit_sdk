@@ -49,6 +49,7 @@ class SurfacePublisher(Node):
         self.declare_parameter("cpu_affinity", "")
         self.declare_parameter("publish_depth", True)
         self.declare_parameter("publish_pointcloud", False)
+        self.declare_parameter("shm_connect_timeout", 10.0)
         self.declare_parameter("ppmm", 0.0)
         self.declare_parameter("point_sample_mm", 0.2)
 
@@ -66,6 +67,9 @@ class SurfacePublisher(Node):
         self._point_sample_mm = float(
             self.get_parameter("point_sample_mm").value
         )
+        self._shm_connect_timeout = float(
+            self.get_parameter("shm_connect_timeout").value
+        )
         self._apply_affinity(self.get_parameter("cpu_affinity").value)
 
         if not serial:
@@ -82,7 +86,8 @@ class SurfacePublisher(Node):
         self._last_pointcloud_seq = -1
         self._last_fresh = time.monotonic()
         self._shm = connect_shm_with_retry(
-            f"tactile_{serial}_surface"
+            f"tactile_{serial}_surface",
+            timeout_s=self._shm_connect_timeout,
         )
 
         self._pub_depth = (

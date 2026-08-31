@@ -185,6 +185,11 @@ sensors/*/calibration/**
 models/*.ckpt
 models/*.pth
 
+# TensorRT / ONNX depth export artifacts (rebuilt by scripts/export_trt_fp16.py)
+sensors/*/model/depth/*.onnx
+sensors/*/model/depth/*.onnx.data
+sensors/*/model/depth/*.engine
+
 # ROS2
 build/
 install/
