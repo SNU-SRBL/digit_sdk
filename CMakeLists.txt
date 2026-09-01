@@ -88,7 +88,9 @@ if(BUILD_TESTING)
     APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
   ament_add_pytest_test(test_fake_shm_producer test/test_fake_shm_producer.py TIMEOUT 30
     APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR})
+  if(TEST copyright)
+    set_tests_properties(copyright PROPERTIES DISABLED TRUE)
+  endif()
 endif()
 
 ament_package()
-set_tests_properties(copyright PROPERTIES DISABLED TRUE)
