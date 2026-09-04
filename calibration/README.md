@@ -239,10 +239,16 @@ and `255`.
 
 ## Decoder training
 
-The frozen base is downloaded directly from `suddhu/tactile_transformer` as
-`dpt_real.p` at pinned revision
-`b05cfe1df2c90d3d91f8378633173b26de5a2d2c`. Sensor checkpoints contain only
-decoder/head weights.
+The frozen base is deliberately user-acquired. It is not version-controlled,
+and setup does not clone a model repository or use Git LFS. Training and
+evaluation resolve `dpt_real.p` from `suddhu/tactile_transformer` at pinned
+revision `b05cfe1df2c90d3d91f8378633173b26de5a2d2c` through
+`huggingface_hub`'s cache, then verify its size and SHA-256. Provide access to
+that artifact before training or evaluation; the current CLI has no
+repository-local manual placement path.
+
+Each physical DIGIT is fine-tuned separately. Sensor checkpoints contain only
+decoder/head weights and remain local, not version-controlled.
 
 Finish collection, annotation, and finalization for all four sensors before
 starting decoder training.
@@ -292,7 +298,8 @@ python3 -m calibration.promote_decoder --serial D21242
 
 Promotion is fixed to `mixed`, verifies the active dataset fingerprint and
 decoder hashes, and refuses to replace an existing production model. Runtime
-artifacts are written to `sensors/D21242/model/depth/`.
+artifacts are written locally to `sensors/D21242/model/depth/`; they are not
+version-controlled.
 
 ## Depth units
 

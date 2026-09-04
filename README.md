@@ -95,13 +95,33 @@ source install/setup.bash
 
 ### Optional force dependencies
 
+Force estimation is optional and is not required for tactile depth. Its
+checkpoints alone are insufficient: the runtime also needs a compatible Sparsh
+source checkout at `sparsh-main/` in the `digit_sdk` root (preferred) or the
+launch working directory. Install the [upstream Sparsh dependencies](https://github.com/facebookresearch/sparsh#-installation-and-setup)
+in the Python environment that runs force estimation, then fetch the force
+checkpoints:
+
 ```bash
+git clone https://github.com/facebookresearch/sparsh.git sparsh-main
 python3 scripts/download_models.py
 python3 -m pip install -e ".[gpu]"
 ```
 
 The download is approximately `1.7 GB` and stores Sparsh models under
 `models/`.
+
+### Tactile depth base weights
+
+The Tactile Transformer base checkpoint is deliberately user-acquired: it is
+not included in this repository, and root setup does not clone a model
+repository or use Git LFS. On the first tactile training, evaluation, or
+PyTorch depth-runtime use, `huggingface_hub` resolves the pinned
+`suddhu/tactile_transformer` `dpt_real.p` artifact in its cache and verifies
+its size and SHA-256. Provide access to that artifact before using depth.
+
+The current interfaces do not define a repository-local manual placement path
+for the base checkpoint.
 
 ## Sensor registration
 
@@ -113,8 +133,10 @@ sensors/<serial>/model/depth/decoder.pth
 sensors/<serial>/model/depth/metadata.json
 ```
 
-The YAML file defines the camera stream and sensor geometry. The decoder and
-metadata are produced by the calibration workflow.
+The YAML file defines the camera stream and sensor geometry. The calibration
+workflow produces the decoder and metadata. The decoder is a local,
+non-versioned production artifact; `metadata.json` is versioned calibration
+metadata. Calibrate and promote one decoder for each physical sensor.
 
 ## ROS 2 launch
 
@@ -272,7 +294,7 @@ The repository is distributed under the
 license notices for code derived from GS-SDK must be preserved.
 
 Sparsh model assets are licensed under
-[CC BY-NC 4.0](sparsh-main/LICENSE.md). NeuralFeels, Tactile Transformer, and
+[CC BY-NC 4.0](https://github.com/facebookresearch/sparsh/blob/main/LICENSE). NeuralFeels, Tactile Transformer, and
 other third-party model assets remain subject to their respective upstream
 licenses.
 

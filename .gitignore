@@ -186,6 +186,8 @@ models/*.ckpt
 models/*.pth
 
 # TensorRT / ONNX depth export artifacts (rebuilt by scripts/export_trt_fp16.py)
+sensors/*/model/depth/decoder.pth
+sensors/*/model/tactile_transformer/**/decoder.pth
 sensors/*/model/depth/*.onnx
 sensors/*/model/depth/*.onnx.data
 sensors/*/model/depth/*.engine

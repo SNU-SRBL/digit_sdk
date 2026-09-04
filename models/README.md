@@ -26,6 +26,15 @@ This directory contains pretrained Sparsh models for vision-based tactile force 
 - **Compatibility**: Requires sparsh-dino-base encoder (embed_dim=768)
 - **Size**: ~50 MB
 
+## Source dependency
+
+These checkpoints are only the force-model artifacts. Force runtime also needs
+a compatible [Sparsh source checkout](https://github.com/facebookresearch/sparsh)
+at `../sparsh-main` relative to this directory (that is,
+`digit_sdk/sparsh-main/`) or in the launch working directory. Install its
+upstream dependencies in the Python environment that runs force estimation.
+This optional dependency is unrelated to DIGIT tactile depth.
+
 ## Download
 
 To download these models, run:
