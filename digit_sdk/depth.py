@@ -8,7 +8,6 @@ indentation-positive depth in millimetres out.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Sequence
@@ -29,8 +28,6 @@ _HOOKS = (2, 5, 8, 11)
 _BASE_REPOSITORY = "suddhu/tactile_transformer"
 _BASE_FILENAME = "dpt_real.p"
 _BASE_REVISION = "b05cfe1df2c90d3d91f8378633173b26de5a2d2c"
-_BASE_SHA256 = "7ab6864c03af38def576e165fe4b1d44646e5dad2b66bf4b62ea47d894007752"
-_BASE_SIZE = 310_969_033
 
 
 def _resize_depth(item) -> np.ndarray:
@@ -41,24 +38,13 @@ def _resize_depth(item) -> np.ndarray:
     return np.clip(depth, 0.0, maximum_depth_mm).astype(np.float32)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _resolve_base(cache_dir: Path | None = None) -> Path:
-    path = Path(hf_hub_download(
+    return Path(hf_hub_download(
         repo_id=_BASE_REPOSITORY,
         filename=_BASE_FILENAME,
         revision=_BASE_REVISION,
         cache_dir=str(cache_dir) if cache_dir else None,
     ))
-    if path.stat().st_size != _BASE_SIZE or _sha256(path) != _BASE_SHA256:
-        raise ValueError(f"base depth checkpoint verification failed: {path}")
-    return path
 
 
 class _ReadProjection(nn.Module):

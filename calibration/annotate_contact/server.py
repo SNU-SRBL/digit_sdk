@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from io import BytesIO
-import hashlib
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -163,13 +162,11 @@ class AnnotationDataset:
 
         with self._lock:
             Image.fromarray(binary, mode="L").save(temporary, format="PNG")
-            digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
             temporary.replace(destination)
             record["annotator"] = annotator
             record["annotation_revision"] = int(
                 record.get("annotation_revision", 0)
             ) + 1
-            record["label_sha256"] = digest
             record["label_path"] = label_relative
             _write_manifest(self.manifest_path, self._records)
         return {
@@ -177,7 +174,6 @@ class AnnotationDataset:
             "saved": True,
             "annotator": annotator,
             "annotation_revision": record["annotation_revision"],
-            "label_sha256": digest,
         }
 
     def status(self) -> Dict[str, int]:

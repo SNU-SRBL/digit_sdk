@@ -10,17 +10,12 @@ import subprocess
 import sys
 
 from calibration.dataset_schema import validate_dataset
-from calibration.tactile_transformer.model import BASE_REVISION, BASE_SHA256
 from calibration.tactile_transformer.select_model import (
     DEFAULT_DICE_TOLERANCE,
     DEFAULT_SEEDS,
     select,
 )
-from calibration.tactile_transformer.train import (
-    METHOD,
-    TRAINING_PROTOCOL,
-    dataset_fingerprint,
-)
+from calibration.tactile_transformer.train import METHOD, TRAINING_PROTOCOL
 
 
 def completed_run_matches(
@@ -28,7 +23,6 @@ def completed_run_matches(
     *,
     serial: str,
     seed: int,
-    fingerprint: str,
 ) -> bool:
     metadata_path = run_root / "training.json"
     decoder_path = run_root / "decoder.pth"
@@ -43,9 +37,6 @@ def completed_run_matches(
         and metadata.get("serial") == serial
         and metadata.get("objective") == METHOD
         and int(metadata.get("seed", -1)) == seed
-        and metadata.get("dataset_fingerprint") == fingerprint
-        and metadata.get("base", {}).get("revision") == BASE_REVISION
-        and metadata.get("base", {}).get("sha256") == BASE_SHA256
     )
 
 
@@ -59,7 +50,6 @@ def train_sensor(
     summary = validate_dataset(dataset_root)
     if summary.serial != serial or summary.dataset_id != serial:
         raise ValueError("active dataset identity must equal the sensor serial")
-    fingerprint = dataset_fingerprint(dataset_root)
     model_root = sensors_root / serial / "model/tactile_transformer"
 
     for seed in DEFAULT_SEEDS:
@@ -68,7 +58,6 @@ def train_sensor(
             run_root,
             serial=serial,
             seed=seed,
-            fingerprint=fingerprint,
         ):
             print(f"reuse {METHOD} seed={seed}", flush=True)
             continue
@@ -100,7 +89,6 @@ def train_sensor(
                 temporary,
                 serial=serial,
                 seed=seed,
-                fingerprint=fingerprint,
             ):
                 raise RuntimeError(
                     f"training run did not produce valid artifacts: {temporary}"

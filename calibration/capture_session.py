@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -109,7 +108,7 @@ class CollectionCamera:
 
 
 class StagedCaptureWriter:
-    """Write lossless images and append checksummed staging records."""
+    """Write lossless images and append staging records."""
 
     def __init__(
         self,
@@ -168,7 +167,6 @@ class StagedCaptureWriter:
             "dtype": str(frame.dtype),
             "colour_space": "BGR",
             "capture_fps": COLLECTION_FPS,
-            "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
         }
         additions = dict(metadata or {})
         overlap = additions.keys() & record.keys()

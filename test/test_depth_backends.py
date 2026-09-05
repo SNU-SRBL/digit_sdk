@@ -1,12 +1,12 @@
 """Backend selection, artifact resolution, and torch/ONNX/TRT equivalence."""
 
-import json
 import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from digit_sdk.backend import (
     _artifacts_present,
@@ -23,12 +23,12 @@ BASELINE_NPZ = Path("/tmp/digit_baseline_frames.npz")
 
 def _make_sensors_root(tmp_path, serials=SERIALS, kind=None):
     for serial in serials:
+        (tmp_path / serial).mkdir(parents=True, exist_ok=True)
+        (tmp_path / serial / f"{serial}.yaml").write_text(
+            "maximum_depth_mm: 2.2\n"
+        )
         model_root = tmp_path / serial / "model" / "depth"
         model_root.mkdir(parents=True)
-        (model_root / "metadata.json").write_text(json.dumps({
-            "serial": serial,
-            "maximum_depth_mm": 2.2,
-        }))
         if kind in ("onnx", "engine"):
             suffix = ".onnx" if kind == "onnx" else "_trt_fp16.engine"
             (model_root / f"{serial}_decoder{suffix}").write_bytes(b"x")
@@ -151,11 +151,11 @@ def test_backends_match_torch_within_contract():
     thresholds = {}
     maxima = {}
     for serial in SERIALS:
-        metadata = json.loads(
-            (SENSORS_ROOT / serial / "model/depth/metadata.json").read_text()
+        config = yaml.safe_load(
+            (SENSORS_ROOT / serial / f"{serial}.yaml").read_text()
         )
-        thresholds[serial] = float(metadata.get("contact_threshold_mm", 0.1))
-        maxima[serial] = float(metadata["maximum_depth_mm"])
+        thresholds[serial] = 0.1
+        maxima[serial] = float(config["maximum_depth_mm"])
     for backend, estimator in estimators.items():
         outputs[backend] = estimator.estimate_batch(frames)
         latencies[backend] = _latency(estimator)
@@ -164,7 +164,7 @@ def test_backends_match_torch_within_contract():
             assert depth.dtype == np.float32
             assert np.isfinite(depth).all()
             assert float(depth.min()) >= 0.0
-            # The fp32 representation of the metadata maximum is 1 ULP above
+            # The fp32 representation of the configured maximum is 1 ULP above
             # the decimal literal, so allow a tiny epsilon.
             assert float(depth.max()) <= maxima[serial] + 1e-6
 

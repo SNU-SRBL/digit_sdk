@@ -9,22 +9,19 @@ from __future__ import annotations
 
 import copy
 from concurrent.futures import ThreadPoolExecutor
-import json
 from pathlib import Path
 from typing import Dict, Mapping, Sequence
 
 import numpy as np
 import torch
+import yaml
 from torch.func import functional_call, stack_module_state, vmap
 
 from .depth import (
-    _BASE_REVISION,
-    _BASE_SHA256,
     _SharedEncoder,
     _SensorDecoder,
     _image_bytes,
     _resolve_base,
-    _sha256,
     _torch_estimate_prepared_batch,
     _torch_estimate_prepared_batch_tensors,
     DepthInput,
@@ -93,29 +90,20 @@ def _resolve_backend(backend: str, sensors_root, serials: Sequence[str]) -> str:
     return backend
 
 
-def _load_metadata(sensors_root, serials: Sequence[str]):
-    """Read and validate the per-serial calibration metadata for a backend."""
+def _load_depth_limits(sensors_root, serials: Sequence[str]) -> Dict[str, float]:
+    """Read the metric-depth scale from each registered sensor config."""
     root = Path(sensors_root)
     maximum_depth_mm: Dict[str, float] = {}
-    contact_threshold_mm: Dict[str, float] = {}
     for serial in serials:
-        model_root = root / serial / "model" / "depth"
-        metadata_path = model_root / "metadata.json"
-        if not metadata_path.is_file():
-            raise FileNotFoundError(
-                f"depth model metadata missing for {serial}: {model_root}"
-            )
-        metadata = json.loads(metadata_path.read_text())
-        if metadata.get("serial") != serial:
-            raise ValueError(f"depth model serial mismatch for {serial}")
-        maximum = float(metadata["maximum_depth_mm"])
+        config_path = root / serial / f"{serial}.yaml"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"sensor config missing for {serial}: {config_path}")
+        config = yaml.safe_load(config_path.read_text()) or {}
+        maximum = float(config["maximum_depth_mm"])
         if not np.isfinite(maximum) or maximum <= 0:
             raise ValueError(f"invalid maximum_depth_mm for {serial}")
         maximum_depth_mm[serial] = maximum
-        contact_threshold_mm[serial] = float(
-            metadata.get("contact_threshold_mm", 0.1)
-        )
-    return maximum_depth_mm, contact_threshold_mm
+    return maximum_depth_mm
 
 
 class TorchDepthBackend(DepthBackend):
@@ -157,28 +145,14 @@ class TorchDepthBackend(DepthBackend):
         del base_payload, encoder_state
 
         self._decoders: Dict[str, _SensorDecoder] = {}
-        self._maximum_depth_mm: Dict[str, float] = {}
+        self._maximum_depth_mm = _load_depth_limits(root, self.serials)
         for serial in self.serials:
             model_root = root / serial / "model" / "depth"
-            metadata_path = model_root / "metadata.json"
             decoder_path = model_root / "decoder.pth"
-            if not metadata_path.is_file() or not decoder_path.is_file():
+            if not decoder_path.is_file():
                 raise FileNotFoundError(
                     f"production depth model missing for {serial}: {model_root}"
                 )
-            metadata = json.loads(metadata_path.read_text())
-            if metadata.get("serial") != serial:
-                raise ValueError(f"depth model serial mismatch for {serial}")
-            expected_sha = metadata.get("decoder_sha256")
-            if expected_sha and _sha256(decoder_path) != expected_sha:
-                raise ValueError(f"depth decoder verification failed: {decoder_path}")
-            base_metadata = metadata.get("base", {})
-            if (
-                base_metadata.get("revision") != _BASE_REVISION
-                or base_metadata.get("sha256") != _BASE_SHA256
-            ):
-                raise ValueError(f"unsupported depth encoder metadata for {serial}")
-
             payload = torch.load(
                 decoder_path, map_location="cpu", weights_only=True
             )
@@ -187,10 +161,6 @@ class TorchDepthBackend(DepthBackend):
             for parameter in decoder.parameters():
                 parameter.requires_grad = False
             self._decoders[serial] = decoder.to(self.device).eval()
-            maximum = float(metadata["maximum_depth_mm"])
-            if not np.isfinite(maximum) or maximum <= 0:
-                raise ValueError(f"invalid maximum_depth_mm for {serial}")
-            self._maximum_depth_mm[serial] = maximum
         self._decoder_streams = {
             serial: torch.cuda.Stream(device=self.device)
             for serial in self.serials
@@ -267,9 +237,7 @@ class OnnxDepthBackend(DepthBackend):
             raise RuntimeError("onnx depth backend requires CUDA")
 
         root = Path(sensors_root)
-        self._maximum_depth_mm, self._contact_threshold_mm = _load_metadata(
-            root, serials
-        )
+        self._maximum_depth_mm = _load_depth_limits(root, serials)
         shared = _find_shared_artifact(root, serials, _SHARED_ONNX_NAME)
         decoder_paths = {
             serial: root / serial / "model" / "depth"
@@ -376,9 +344,7 @@ class TrtFP16DepthBackend(DepthBackend):
 
         self._trt = trt
         root = Path(sensors_root)
-        self._maximum_depth_mm, self._contact_threshold_mm = _load_metadata(
-            root, serials
-        )
+        self._maximum_depth_mm = _load_depth_limits(root, serials)
         shared = _find_shared_artifact(root, serials, _SHARED_TRT_NAME)
         decoder_paths = {
             serial: root / serial / "model" / "depth"

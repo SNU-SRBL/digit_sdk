@@ -3,7 +3,6 @@
 
 import argparse
 from collections import Counter
-import hashlib
 import json
 from pathlib import Path
 
@@ -84,8 +83,6 @@ def load_background_reference(sensors_root: Path, serial: str):
         metadata.get("kind") != "background_reference"
         or metadata.get("serial") != serial
         or metadata.get("path") != "reference.png"
-        or hashlib.sha256(path.read_bytes()).hexdigest()
-        != metadata.get("image_sha256")
     ):
         raise ValueError(f"invalid background reference metadata: {metadata_path}")
     background = cv2.imread(str(path), cv2.IMREAD_COLOR)

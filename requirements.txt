@@ -17,6 +17,8 @@ pyudev
 # Deep learning (depth estimation)
 torch>=2.1.0
 torchvision>=0.16.0
+onnxruntime-gpu>=1.18.0
+nvidia-modelopt[onnx]>=0.41.0
 
 # Force estimation (Sparsh)
 einops>=0.6

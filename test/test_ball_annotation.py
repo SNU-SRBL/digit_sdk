@@ -1,4 +1,3 @@
-import hashlib
 from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -62,7 +61,6 @@ def test_save_ball_annotation_is_atomic_and_geometrically_complete(tmp_path):
         }
         assert np.allclose(label["center_px"], [5.0, 4.0])
         assert float(label["radius_px"]) == 20.0
-    assert result["label_sha256"] == hashlib.sha256(label_path.read_bytes()).hexdigest()
     assert dataset.status() == {
         "total": 1, "completed": 1, "rejected": 0, "remaining": 0,
     }

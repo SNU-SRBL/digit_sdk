@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -175,7 +174,6 @@ class BallAnnotationDataset:
                     ppmm=float(record["ppmm"]),
                     indentation_depth_mm=depth,
                 )
-            digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
             temporary.replace(destination)
             record.update({
                 "label_path": relative.as_posix(),
@@ -184,7 +182,6 @@ class BallAnnotationDataset:
                 "indentation_depth_mm": depth,
                 "annotator": annotator,
                 "annotation_revision": int(record.get("annotation_revision", 0)) + 1,
-                "label_sha256": digest,
             })
             _write_jsonl(self.metadata_path, self._records)
         return {
@@ -195,7 +192,6 @@ class BallAnnotationDataset:
             "indentation_depth_mm": depth,
             "annotator": annotator,
             "annotation_revision": record["annotation_revision"],
-            "label_sha256": digest,
         }
 
     def set_rejection(

@@ -10,7 +10,6 @@ are built.  Requires tensorrt and onnxruntime-gpu in the running Python.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
@@ -25,12 +24,9 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from digit_sdk.depth import (  # noqa: E402
-    _BASE_REVISION,
-    _BASE_SHA256,
     _HOOKS,
     _SensorDecoder,
     _resolve_base,
-    _sha256,
 )
 
 
@@ -146,27 +142,40 @@ def _verify_onnx(path, module, sample_inputs, input_names, output_names) -> None
 
 
 def _to_fp16_onnx(onnx_path: Path, fp16_path: Path) -> None:
-    """Cast the verified FP32 graph to FP16 for the strongly-typed TRT 11 build."""
+    """Create and validate the strongly typed FP16 graph required by TRT 11."""
     import onnx
-    from onnxruntime.transformers import float16 as ort_fp16
+    from modelopt.onnx import autocast
 
-    model = ort_fp16.convert_float_to_float16(onnx.load(str(onnx_path)))
+    model = autocast.convert_to_f16(onnx.load(str(onnx_path)), keep_io_types=True)
+    onnx.checker.check_model(model)
     onnx.save(model, str(fp16_path))
+    onnx.checker.check_model(str(fp16_path))
 
 
-def _build_engine(onnx_path: Path, engine_path: Path, max_batch: int) -> float:
+def _build_engine(
+    onnx_path: Path, engine_path: Path, max_batch: int, fp16_onnx_path: Path
+) -> float:
     import tensorrt as trt
+
+    trt11 = not hasattr(trt.BuilderFlag, "FP16")
+    engine_onnx = onnx_path
+    if trt11:
+        _to_fp16_onnx(onnx_path, fp16_onnx_path)
+        engine_onnx = fp16_onnx_path
 
     logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(logger)
     network = builder.create_network(_network_creation_flags(trt))
     parser = trt.OnnxParser(network, logger)
-    if not parser.parse_from_file(str(onnx_path)):
+    if not parser.parse_from_file(str(engine_onnx)):
         errors = [parser.get_error(i) for i in range(parser.num_errors)]
-        raise RuntimeError(f"ONNX parse failed for {onnx_path}: {errors}")
+        raise RuntimeError(f"ONNX parse failed for {engine_onnx}: {errors}")
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
-    # TRT 11 is strongly typed: the FP16 graph itself selects FP16 kernels.
+    if not trt11:
+        if not builder.platform_has_fast_fp16:
+            raise RuntimeError("TensorRT platform does not support fast FP16")
+        config.set_flag(trt.BuilderFlag.FP16)
     profile = builder.create_optimization_profile()
     for index in range(network.num_inputs):
         tensor = network.get_input(index)
@@ -185,7 +194,7 @@ def _build_engine(onnx_path: Path, engine_path: Path, max_batch: int) -> float:
     started = time.monotonic()
     serialized = builder.build_serialized_network(network, config)
     if serialized is None:
-        raise RuntimeError(f"TensorRT engine build failed for {onnx_path}")
+        raise RuntimeError(f"TensorRT engine build failed for {engine_onnx}")
     runtime = trt.Runtime(logger)
     if runtime.deserialize_cuda_engine(serialized) is None:
         raise RuntimeError(f"TensorRT engine failed to deserialize: {engine_path}")
@@ -235,19 +244,9 @@ def main(argv=None) -> int:
     sample_activations = [torch.rand(1, 197, 384) for _ in range(4)]
     for serial in serials:
         model_root = root / serial / "model" / "depth"
-        metadata = json.loads((model_root / "metadata.json").read_text())
         decoder_path = model_root / "decoder.pth"
-        if metadata.get("serial") != serial:
-            raise ValueError(f"depth model serial mismatch for {serial}")
-        expected_sha = metadata.get("decoder_sha256")
-        if expected_sha and _sha256(decoder_path) != expected_sha:
-            raise ValueError(f"depth decoder verification failed: {decoder_path}")
-        base_metadata = metadata.get("base", {})
-        if (
-            base_metadata.get("revision") != _BASE_REVISION
-            or base_metadata.get("sha256") != _BASE_SHA256
-        ):
-            raise ValueError(f"unsupported depth encoder metadata for {serial}")
+        if not decoder_path.is_file():
+            raise FileNotFoundError(f"depth decoder missing for {serial}: {decoder_path}")
         payload = torch.load(decoder_path, map_location="cpu", weights_only=True)
         decoder = _SensorDecoder()
         decoder.load_state_dict(payload["model_state_dict"], strict=True)
@@ -275,10 +274,8 @@ def main(argv=None) -> int:
     encoder_fp16 = (
         root / serials[0] / "model" / "depth" / "dpt_shared_encoder_fp16.onnx"
     )
-    print(f"[3/3] casting encoder ONNX to FP16 -> {encoder_fp16}")
-    _to_fp16_onnx(encoder_onnx, encoder_fp16)
     print(f"[3/3] building shared encoder TRT FP16 engine (batch 1..{max_batch})")
-    elapsed = _build_engine(encoder_fp16, encoder_engine, max_batch)
+    elapsed = _build_engine(encoder_onnx, encoder_engine, max_batch, encoder_fp16)
     print(
         f"  built in {elapsed:.1f}s -> {encoder_engine} "
         f"({encoder_engine.stat().st_size / 1e6:.1f} MB)"
@@ -291,10 +288,10 @@ def main(argv=None) -> int:
         decoder_fp16 = (
             root / serial / "model" / "depth" / f"{serial}_decoder_fp16.onnx"
         )
-        print(f"[3/3] casting decoder ONNX {serial} to FP16")
-        _to_fp16_onnx(decoder_onnx, decoder_fp16)
         print(f"[3/3] building decoder TRT FP16 engine {serial}")
-        elapsed = _build_engine(decoder_fp16, decoder_engine, max_batch)
+        elapsed = _build_engine(
+            decoder_onnx, decoder_engine, max_batch, decoder_fp16
+        )
         print(
             f"  built in {elapsed:.1f}s -> {decoder_engine} "
             f"({decoder_engine.stat().st_size / 1e6:.1f} MB)"

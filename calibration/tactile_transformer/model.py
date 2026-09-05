@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Iterable
 
@@ -16,8 +15,6 @@ from torch import nn
 BASE_REPOSITORY = "suddhu/tactile_transformer"
 BASE_FILENAME = "dpt_real.p"
 BASE_REVISION = "b05cfe1df2c90d3d91f8378633173b26de5a2d2c"
-BASE_SHA256 = "7ab6864c03af38def576e165fe4b1d44646e5dad2b66bf4b62ea47d894007752"
-BASE_SIZE = 310_969_033
 
 
 class ReadProjection(nn.Module):
@@ -147,18 +144,13 @@ class TactileDPT(nn.Module):
 
 
 def resolve_base(cache_dir: Path = None) -> Path:
-    """Resolve and verify the immutable official Hugging Face artifact."""
+    """Resolve the pinned official Hugging Face artifact."""
     path = Path(hf_hub_download(
         repo_id=BASE_REPOSITORY,
         filename=BASE_FILENAME,
         revision=BASE_REVISION,
         cache_dir=str(cache_dir) if cache_dir else None,
     ))
-    if path.stat().st_size != BASE_SIZE:
-        raise ValueError(f"base checkpoint size mismatch: {path}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest != BASE_SHA256:
-        raise ValueError(f"base checkpoint SHA-256 mismatch: {path}")
     return path
 
 

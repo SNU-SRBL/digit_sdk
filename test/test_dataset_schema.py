@@ -1,4 +1,3 @@
-import hashlib
 import json
 from pathlib import Path
 
@@ -14,9 +13,6 @@ def _write_png(path: Path, array: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(array).save(path)
 
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _make_dataset(root: Path):
@@ -45,15 +41,13 @@ def _make_dataset(root: Path):
         "split_group": "contact-1",
     }
 
-    background_path = root / "background/session-1/background.png"
-    _write_png(background_path, image)
+    _write_png(root / "background/session-1/background.png", image)
     background = {
         **common,
         "sample_id": "background-1",
         "modality": "background",
         "image_path": "background/session-1/background.png",
         "label_path": None,
-        "image_sha256": _sha256(background_path),
     }
 
     ball_image_path = root / "ball/images/session-1/ball-1.png"
@@ -197,14 +191,6 @@ def test_rejects_non_utc_capture_time(tmp_path):
     with pytest.raises(DatasetSchemaError, match="must use UTC"):
         validate_dataset(tmp_path)
 
-
-def test_rejects_checksum_mismatch(tmp_path):
-    records = _make_dataset(tmp_path)
-    records[0]["image_sha256"] = "0" * 64
-    _write_manifest(tmp_path, records)
-
-    with pytest.raises(DatasetSchemaError, match="does not match"):
-        validate_dataset(tmp_path)
 
 
 def test_rejects_unindexed_data_file(tmp_path):

@@ -117,8 +117,8 @@ The Tactile Transformer base checkpoint is deliberately user-acquired: it is
 not included in this repository, and root setup does not clone a model
 repository or use Git LFS. On the first tactile training, evaluation, or
 PyTorch depth-runtime use, `huggingface_hub` resolves the pinned
-`suddhu/tactile_transformer` `dpt_real.p` artifact in its cache and verifies
-its size and SHA-256. Provide access to that artifact before using depth.
+`suddhu/tactile_transformer` `dpt_real.p` artifact in its cache. Provide
+access to that artifact before using depth.
 
 The current interfaces do not define a repository-local manual placement path
 for the base checkpoint.
@@ -130,13 +130,12 @@ Each sensor requires:
 ```text
 sensors/<serial>/<serial>.yaml
 sensors/<serial>/model/depth/decoder.pth
-sensors/<serial>/model/depth/metadata.json
 ```
 
 The YAML file defines the camera stream and sensor geometry. The calibration
-workflow produces the decoder and metadata. The decoder is a local,
-non-versioned production artifact; `metadata.json` is versioned calibration
-metadata. Calibrate and promote one decoder for each physical sensor.
+workflow produces the decoder and records `maximum_depth_mm` in that sensor's
+YAML. The decoder is a local, non-versioned production artifact. Calibrate
+and promote one decoder for each physical sensor.
 
 ## ROS 2 launch
 

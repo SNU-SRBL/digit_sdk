@@ -1,4 +1,3 @@
-import hashlib
 import json
 from pathlib import Path
 
@@ -54,21 +53,19 @@ def test_background_split_has_exact_holdout_counts():
     ) == 40
 
 
-def _png(path: Path, value: int) -> str:
+def _png(path: Path, value: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), np.full(SHAPE, value, dtype=np.uint8))
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _mask(path: Path) -> str:
+def _mask(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = np.zeros(SHAPE[:2], dtype=np.uint8)
     image[2:6, 3:7] = 255
     cv2.imwrite(str(path), image)
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _label(path: Path, diameter=10.0, radius=2.0, ppmm=2.0) -> str:
+def _label(path: Path, diameter=10.0, radius=2.0, ppmm=2.0) -> None:
     depth = diameter / 2 - np.sqrt((diameter / 2) ** 2 - (radius / ppmm) ** 2)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -79,7 +76,6 @@ def _label(path: Path, diameter=10.0, radius=2.0, ppmm=2.0) -> str:
         ppmm=ppmm,
         indentation_depth_mm=depth,
     )
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_finalizes_annotated_partition_free_inboxes(tmp_path):
@@ -109,6 +105,8 @@ def test_finalizes_annotated_partition_free_inboxes(tmp_path):
         sample_id = f"ball-{index}"
         image_path = Path("images/ball") / f"{sample_id}.png"
         label_path = Path("labels/ball") / f"{sample_id}.npz"
+        _png(ball_root / image_path, 20 + index)
+        _label(ball_root / label_path)
         ball_rows.append({
             "sample_id": sample_id, "kind": "ball", "serial": "DTEST",
             "path": image_path.as_posix(),
@@ -116,8 +114,6 @@ def test_finalizes_annotated_partition_free_inboxes(tmp_path):
             "captured_at_utc": f"2026-07-20T00:00:0{index}+00:00",
             "session_id": "ball", "split_group": sample_id,
             "shape": list(SHAPE), "dtype": "uint8", "colour_space": "BGR",
-            "image_sha256": _png(ball_root / image_path, 20 + index),
-            "label_sha256": _label(ball_root / label_path),
             "ball_diameter_mm": 10.0, "center_px": [5.0, 4.0],
             "radius_px": 2.0, "ppmm": 2.0,
             "indentation_depth_mm": float(
@@ -138,14 +134,14 @@ def test_finalizes_annotated_partition_free_inboxes(tmp_path):
         sample_id = f"touch-{index}"
         image_path = Path("touches/manual") / f"{sample_id}.png"
         label_path = Path("masks/manual") / f"{sample_id}.png"
+        _png(manual_root / image_path, 40 + index)
+        _mask(manual_root / label_path)
         manual_rows.append({
             "sample_id": sample_id, "kind": "touch", "serial": "DTEST",
             "path": image_path.as_posix(), "label_path": label_path.as_posix(),
             "captured_at_utc": f"2026-07-20T00:01:0{index + 1}+00:00",
             "session_id": "manual", "split_group": sample_id,
             "shape": list(SHAPE), "dtype": "uint8", "colour_space": "BGR",
-            "image_sha256": _png(manual_root / image_path, 40 + index),
-            "label_sha256": _mask(manual_root / label_path),
             "annotator": "tester", "annotation_revision": 1,
         })
     (manual_root / "metadata.jsonl").write_text(

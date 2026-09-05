@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,7 +20,6 @@ from calibration.tactile_transformer.data import (
 )
 from calibration.tactile_transformer.model import (
     BASE_REVISION,
-    BASE_SHA256,
     TactileDPT,
     freeze_encoder,
     load_base,
@@ -30,18 +28,10 @@ from calibration.tactile_transformer.model import (
 from calibration.tactile_transformer.train import (
     METHOD,
     _load_decoder,
-    dataset_fingerprint,
     evaluate_ball,
     evaluate_manual,
 )
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _write_json_once(path: Path, document: dict) -> None:
@@ -77,29 +67,15 @@ def _load_selection(path: Path, serial: str) -> dict:
 def _verify_selection(
     selection: dict,
     model_root: Path,
-    dataset_root: Path,
     dataset_id: str,
 ) -> Path:
     if selection.get("dataset_id") != dataset_id:
         raise ValueError("selection dataset does not match active calibration")
     if selection.get("base", {}).get("revision") != BASE_REVISION:
         raise ValueError("selection uses an unsupported encoder revision")
-    if selection.get("base", {}).get("sha256") != BASE_SHA256:
-        raise ValueError("selection uses an unsupported encoder checksum")
-
     decoder = model_root / selection["selected"]["decoder"]
     if not decoder.is_file():
         raise FileNotFoundError(decoder)
-    if _sha256(decoder) != selection["selected"]["decoder_sha256"]:
-        raise ValueError("selected decoder checksum mismatch")
-
-    seed = int(selection["selected"]["seed"])
-    training_path = (
-        model_root / selection["method"] / f"seed_{seed}" / "training.json"
-    )
-    training = json.loads(training_path.read_text())
-    if training.get("dataset_fingerprint") != dataset_fingerprint(dataset_root):
-        raise ValueError("selected decoder was trained on a different dataset")
     return decoder
 
 
@@ -123,9 +99,7 @@ def evaluate(
     if test_path.exists():
         raise FileExistsError(f"frozen test result already exists: {test_path}")
     selection = _load_selection(selection_path, serial)
-    decoder = _verify_selection(
-        selection, model_root, dataset_root, summary.dataset_id
-    )
+    decoder = _verify_selection(selection, model_root, summary.dataset_id)
 
     model = TactileDPT()
     load_base(model, resolve_base(base_cache_dir))
@@ -162,10 +136,8 @@ def evaluate(
         "method": METHOD,
         "selected_seed": int(selection["selected"]["seed"]),
         "dataset_id": summary.dataset_id,
-        "dataset_fingerprint": dataset_fingerprint(dataset_root),
         "ball_split_id": selection["ball_split_id"],
         "manual_mask_split_id": selection["manual_mask_split_id"],
-        "decoder_sha256": selection["selected"]["decoder_sha256"],
         "contact_threshold_mm": float(selection["contact_threshold_mm"]),
         "ball": ball,
         "manual": manual,

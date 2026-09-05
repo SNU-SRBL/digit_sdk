@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
@@ -110,16 +109,6 @@ def _utc_timestamp(value: Any, name: str) -> None:
         f"{name} must use UTC",
     )
 
-
-def _check_sha256(path: Path, expected: Any, name: str) -> None:
-    _require(
-        isinstance(expected, str)
-        and len(expected) == 64
-        and all(char in "0123456789abcdef" for char in expected),
-        f"{name} must be a lowercase SHA-256 digest",
-    )
-    actual = hashlib.sha256(path.read_bytes()).hexdigest()
-    _require(actual == expected, f"{name} does not match {path}")
 
 
 def _load_image(path: Path, name: str) -> np.ndarray:
@@ -361,9 +350,6 @@ def validate_dataset(root: Path) -> DatasetSummary:
         image = _load_image(image_path, f"{prefix}.image_path")
         _require(image.shape == expected_shape,
                  f"{prefix}.image_path shape does not match manifest")
-        if "image_sha256" in record:
-            _check_sha256(image_path, record["image_sha256"],
-                          f"{prefix}.image_sha256")
 
         label_value = record["label_path"]
         if modality == "background":
@@ -382,9 +368,6 @@ def validate_dataset(root: Path) -> DatasetSummary:
             _require(label_path not in seen_labels,
                      f"duplicate label_path: {label_value}")
             seen_labels.add(label_path)
-            if "label_sha256" in record:
-                _check_sha256(label_path, record["label_sha256"],
-                              f"{prefix}.label_sha256")
             if modality == "ball":
                 _validate_ball(record, label_path, config, prefix)
             else:

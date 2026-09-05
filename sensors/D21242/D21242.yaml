@@ -11,6 +11,8 @@ imgw: 240
 raw_imgh: 320
 raw_imgw: 240
 framerate: 60
+# Metric depth calibration
+maximum_depth_mm: 2.2
 # Force Estimation (Sparsh)
 force:
   enable_force: false

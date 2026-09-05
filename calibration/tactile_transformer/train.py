@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -29,8 +28,6 @@ from calibration.tactile_transformer.model import (
     BASE_FILENAME,
     BASE_REPOSITORY,
     BASE_REVISION,
-    BASE_SHA256,
-    BASE_SIZE,
     TactileDPT,
     decoder_parameters,
     decoder_state,
@@ -43,23 +40,6 @@ from calibration.tactile_transformer.model import (
 METHOD = "mixed"
 TRAINING_PROTOCOL = "mixed_ball_manual"
 
-
-def dataset_fingerprint(root: Path) -> str:
-    """Hash the canonical metadata and frozen splits used for training."""
-    paths = [
-        root / "dataset.yaml",
-        root / "manifest.jsonl",
-        root / "splits/background.json",
-        root / "splits/ball.json",
-        root / "splits/manual_mask.json",
-    ]
-    digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def seed_everything(seed: int) -> None:
@@ -315,7 +295,6 @@ def _base_metadata(args, dataset_id, root):
         "training_protocol": TRAINING_PROTOCOL,
         "serial": args.serial,
         "dataset_id": dataset_id,
-        "dataset_fingerprint": dataset_fingerprint(root),
         "ball_split_id": active_split(root, "ball")["split_id"],
         "manual_mask_split_id": active_split(root, "manual_mask")["split_id"],
         "objective": METHOD,
@@ -327,8 +306,6 @@ def _base_metadata(args, dataset_id, root):
             "repository": BASE_REPOSITORY,
             "filename": BASE_FILENAME,
             "revision": BASE_REVISION,
-            "sha256": BASE_SHA256,
-            "size": BASE_SIZE,
         },
         "fine_tuned_parameters": "reassembly, fusion, depth head",
         "encoder_frozen": True,

@@ -1,4 +1,3 @@
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +32,6 @@ def test_save_frame_stages_unpartitioned_lossless_capture(tmp_path):
     assert record["captured_at_utc"] == "2026-07-16T01:02:03.456789+00:00"
     saved_path = tmp_path / record["path"]
     assert np.array_equal(cv2.imread(str(saved_path)), frame)
-    assert record["image_sha256"] == hashlib.sha256(saved_path.read_bytes()).hexdigest()
 
     rows = [json.loads(line) for line in (tmp_path / "metadata.jsonl").read_text().splitlines()]
     assert rows == [record]

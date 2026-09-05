@@ -33,19 +33,11 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     ]
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _copy_checked(source: Path, destination: Path, expected=None) -> str:
+def _copy(source: Path, destination: Path) -> None:
     if not source.is_file():
         raise FileNotFoundError(source)
-    digest = _sha256(source)
-    if expected and digest != expected:
-        raise ValueError(f"checksum mismatch: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
-    return digest
 
 
 def _split_groups(records: Iterable[Mapping[str, Any]]) -> List[str]:
@@ -227,17 +219,15 @@ def finalize_dataset(
     output_records = []
 
     reference_relative = Path("background/reference.png")
-    _ = _copy_checked(
+    _copy(
         background_root / background["path"],
         output_root / reference_relative,
-        background.get("image_sha256"),
     )
     for index, source in enumerate(background["source_frames"]):
         relative = Path("background") / source["path"]
-        digest = _copy_checked(
+        _copy(
             background_root / source["path"],
             output_root / relative,
-            source.get("image_sha256"),
         )
         sample_id = (
             f"{serial}_background_{background['session_id']}_{index:03d}"
@@ -253,7 +243,6 @@ def finalize_dataset(
             "captured_at_utc": source["captured_at_utc"],
             "shape": shape,
             "split_group": sample_id,
-            "image_sha256": digest,
             "training_eligible": True,
         })
     (output_root / "background/metadata.json").write_text(
@@ -270,13 +259,11 @@ def finalize_dataset(
             Path("ball/labels") / row["session_id"]
             / f"{row['sample_id']}.npz"
         )
-        image_digest = _copy_checked(
+        _copy(
             ball_root / row["path"], output_root / image_relative,
-            row.get("image_sha256"),
         )
-        label_digest = _copy_checked(
+        _copy(
             ball_root / row["label_path"], output_root / label_relative,
-            row.get("label_sha256"),
         )
         record = {
             "schema_version": 1,
@@ -289,8 +276,6 @@ def finalize_dataset(
             "captured_at_utc": row["captured_at_utc"],
             "shape": shape,
             "split_group": row["split_group"],
-            "image_sha256": image_digest,
-            "label_sha256": label_digest,
             "ball_diameter_mm": row["ball_diameter_mm"],
             "center_px": row["center_px"],
             "radius_px": row["radius_px"],
@@ -312,13 +297,11 @@ def finalize_dataset(
             Path("manual_mask/masks") / row["session_id"]
             / f"{row['sample_id']}.png"
         )
-        image_digest = _copy_checked(
+        _copy(
             manual_root / row["path"], output_root / image_relative,
-            row.get("image_sha256"),
         )
-        mask_digest = _copy_checked(
+        _copy(
             manual_root / row["label_path"], output_root / mask_relative,
-            row.get("label_sha256"),
         )
         record = {
             "schema_version": 1,
@@ -333,8 +316,6 @@ def finalize_dataset(
             "split_group": row["split_group"],
             "annotator": row["annotator"],
             "annotation_revision": row["annotation_revision"],
-            "image_sha256": image_digest,
-            "label_sha256": mask_digest,
         }
         output_records.append(record)
         manual_records.append(record)

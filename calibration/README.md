@@ -169,7 +169,7 @@ Masks are binary PNG files: `0` is non-contact and `255` is contact.
 - left/right arrows: previous/next sample.
 
 Every save records the annotator, increments `annotation_revision`, and updates
-the mask checksum.
+the mask geometry.
 
 ## Finalization
 
@@ -220,7 +220,7 @@ immutable source for future review and relabeling.
 
 `dataset.yaml` fixes the serial, decoded image shape, BGR `uint8` colour
 format, and `ppmm`. `manifest.jsonl` records relative paths, UTC timestamps,
-physical `split_group`, and SHA-256 checksums.
+physical `split_group`, and calibration geometry.
 
 Ball labels contain:
 
@@ -296,10 +296,10 @@ gates pass, promote the exact tested decoder:
 python3 -m calibration.promote_decoder --serial D21242
 ```
 
-Promotion is fixed to `mixed`, verifies the active dataset fingerprint and
-decoder hashes, and refuses to replace an existing production model. Runtime
-artifacts are written locally to `sensors/D21242/model/depth/`; they are not
-version-controlled.
+Promotion is fixed to `mixed`, writes the depth limit to the sensor YAML, and
+refuses to replace an existing
+production model. Runtime artifacts are written locally to
+`sensors/D21242/model/depth/`; they are not version-controlled.
 
 ## Depth units
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -65,7 +64,6 @@ def _write_png(path: Path, frame: np.ndarray) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as file:
         file.write(data)
-    return hashlib.sha256(data).hexdigest()
 
 
 def save_background_reference(
@@ -94,13 +92,12 @@ def save_background_reference(
     source_frames = []
     for index, (frame, timestamp) in enumerate(zip(frames, timestamps)):
         relative = Path("frames") / capture_session / f"{index:03d}.png"
-        digest = _write_png(output_root / relative, frame)
+        _write_png(output_root / relative, frame)
         source_frames.append({
             "path": relative.as_posix(),
             "captured_at_utc": timestamp.astimezone(timezone.utc).isoformat(),
-            "image_sha256": digest,
         })
-    reference_digest = _write_png(output_root / "reference.png", reference)
+    _write_png(output_root / "reference.png", reference)
     sample_id = f"{serial}_background_reference"
     record = {
         "sample_id": sample_id,
@@ -117,7 +114,6 @@ def save_background_reference(
         "sample_count": len(frames),
         "interval_seconds": float(interval_seconds),
         "reduction": "float32_mean_round_uint8",
-        "image_sha256": reference_digest,
         "source_frames": source_frames,
     }
     (output_root / "metadata.json").write_text(

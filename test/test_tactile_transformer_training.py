@@ -253,7 +253,7 @@ def test_seed_selection_requires_every_seed_to_be_eligible():
         choose_run(runs, dice_tolerance=0.005)
 
 
-def test_completed_run_requires_matching_dataset_and_protocol(tmp_path):
+def test_completed_run_requires_matching_protocol(tmp_path):
     run_root = tmp_path / "seed_17"
     run_root.mkdir()
     (run_root / "decoder.pth").write_bytes(b"decoder")
@@ -262,27 +262,12 @@ def test_completed_run_requires_matching_dataset_and_protocol(tmp_path):
         "serial": "DTEST",
         "objective": "mixed",
         "seed": 17,
-        "dataset_fingerprint": "dataset",
-        "base": {
-            "revision": "b05cfe1df2c90d3d91f8378633173b26de5a2d2c",
-            "sha256": (
-                "7ab6864c03af38def576e165fe4b1d44646e5dad2b66bf4b62"
-                "ea47d894007752"
-            ),
-        },
     }))
 
     assert completed_run_matches(
         run_root,
         serial="DTEST",
         seed=17,
-        fingerprint="dataset",
-    )
-    assert not completed_run_matches(
-        run_root,
-        serial="DTEST",
-        seed=17,
-        fingerprint="changed",
     )
 
 

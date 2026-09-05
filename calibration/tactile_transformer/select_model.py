@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -15,13 +14,6 @@ from calibration.tactile_transformer.train import METHOD
 DEFAULT_SEEDS = (17, 29, 43)
 DEFAULT_DICE_TOLERANCE = 0.005
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _flatten(path: Path, document: dict) -> dict:
@@ -143,7 +135,6 @@ def select(
             "seed": run["seed"],
             "source_decoder": source.relative_to(model_root).as_posix(),
             "decoder": destination.relative_to(model_root).as_posix(),
-            "decoder_sha256": _sha256(destination),
             "validation": training["selected_validation"],
         },
         "base": training["base"],

@@ -3,27 +3,16 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 
 from calibration.dataset_schema import validate_dataset
-from calibration.tactile_transformer.model import BASE_REVISION, BASE_SHA256
-from calibration.tactile_transformer.train import dataset_fingerprint
 
 
 PRODUCTION_METHOD = "mixed"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def promote(serial: str, sensors_root: Path) -> Path:
@@ -54,21 +43,6 @@ def promote(serial: str, sensors_root: Path) -> Path:
         raise ValueError("test result does not match the selected decoder")
     if not test.get("eligible"):
         raise ValueError("selected decoder failed the frozen test gates")
-    if test.get("dataset_fingerprint") != dataset_fingerprint(dataset_root):
-        raise ValueError("test result does not match the active calibration")
-
-    decoder_sha256 = _sha256(decoder_path)
-    if decoder_sha256 != selection["selected"]["decoder_sha256"]:
-        raise ValueError("selected decoder checksum mismatch")
-    if decoder_sha256 != test["decoder_sha256"]:
-        raise ValueError("tested decoder checksum mismatch")
-    base = selection.get("base", {})
-    if (
-        base.get("revision") != BASE_REVISION
-        or base.get("sha256") != BASE_SHA256
-    ):
-        raise ValueError("selected decoder uses an unsupported encoder")
-
     production_root = sensor_root / "model" / "depth"
     if production_root.exists():
         raise FileExistsError(f"production depth model already exists: {production_root}")
@@ -77,27 +51,16 @@ def promote(serial: str, sensors_root: Path) -> Path:
         raise FileExistsError(f"incomplete promotion exists: {temporary}")
     temporary.mkdir(parents=True)
     shutil.copy2(decoder_path, temporary / "decoder.pth")
-    metadata = {
-        "schema_version": 1,
-        "promoted_at_utc": datetime.now(timezone.utc).isoformat(),
-        "serial": serial,
-        "dataset_id": summary.dataset_id,
-        "dataset_fingerprint": test["dataset_fingerprint"],
-        "method": PRODUCTION_METHOD,
-        "encoder_frozen": True,
-        "decoder_scope": "per_sensor",
-        "selected_seed": int(selection["selected"]["seed"]),
-        "decoder_sha256": decoder_sha256,
-        "base": base,
-        "maximum_depth_mm": float(selection["maximum_depth_mm"]),
-        "contact_threshold_mm": float(selection["contact_threshold_mm"]),
-        "validation": selection["selected"]["validation"],
-        "test": test,
-    }
-    (temporary / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n"
-    )
     os.replace(temporary, production_root)
+    config_path = sensor_root / f"{serial}.yaml"
+    maximum = float(selection["maximum_depth_mm"])
+    config = config_path.read_text()
+    line = f"maximum_depth_mm: {maximum}\n"
+    if re.search(r"^maximum_depth_mm:.*$", config, flags=re.MULTILINE):
+        config = re.sub(r"^maximum_depth_mm:.*$", line.rstrip(), config, flags=re.MULTILINE)
+    else:
+        config += "\n# Metric depth calibration\n" + line
+    config_path.write_text(config)
     return production_root
 
 

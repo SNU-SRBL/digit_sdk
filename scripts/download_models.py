@@ -12,7 +12,6 @@ Models are saved to the models/ directory.
 import sys
 import argparse
 from pathlib import Path
-import hashlib
 
 try:
     from huggingface_hub import hf_hub_download
@@ -37,26 +36,6 @@ MODELS = {
         "description": "Sparsh DIGIT force field decoder (epoch 31)",
     },
 }
-
-
-def compute_file_hash(filepath: Path, algorithm: str = "sha256") -> str:
-    """
-    Compute hash of a file for verification.
-
-    Args:
-        filepath: Path to file
-        algorithm: Hash algorithm (sha256, md5, etc.)
-
-    Returns
-    -------
-    Hex digest of file hash
-
-    """
-    hash_obj = hashlib.new(algorithm)
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            hash_obj.update(chunk)
-    return hash_obj.hexdigest()
 
 
 def verify_model_file(filepath: Path) -> bool:
@@ -150,10 +129,6 @@ def download_model(
 
         file_size_mb = local_path.stat().st_size / (1024 * 1024)
         print(f"  ✓ Downloaded: {local_filename} ({file_size_mb:.1f} MB)")
-
-        # Compute hash for reference
-        file_hash = compute_file_hash(local_path)
-        print(f"    SHA256: {file_hash[:16]}...")
 
         return True
 

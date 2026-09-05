@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from calibration.tactile_transformer.data import image_tensor
 from digit_sdk.depth import DepthEstimator, _image_bytes, _image_tensor
@@ -42,16 +43,9 @@ def test_production_preprocessing_matches_training_preprocessing():
     torch.testing.assert_close(reconstructed, image_tensor(image))
 
 
-@pytest.mark.skipif(
-    not (MODEL_ROOT / "metadata.json").is_file(),
-    reason="clean D21275 decoder has not been promoted",
-)
-def test_production_model_metadata_is_serial_bound():
-    metadata = json.loads((MODEL_ROOT / "metadata.json").read_text())
-    assert metadata["serial"] == "D21275"
-    assert metadata["encoder_frozen"] is True
-    assert metadata["decoder_scope"] == "per_sensor"
-    assert metadata["maximum_depth_mm"] == 2.2
+def test_production_depth_limit_is_sensor_configured():
+    config = yaml.safe_load(Path("sensors/D21275/D21275.yaml").read_text())
+    assert config["maximum_depth_mm"] == 2.2
 
 
 @pytest.mark.skipif(
