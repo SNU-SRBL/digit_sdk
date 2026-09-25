@@ -106,6 +106,23 @@ class DepthHead(nn.Module):
         return self.head(values)
 
 
+class ContactHead(nn.Module):
+    """Independent per-pixel contact logits over the fused decoder features."""
+
+    def __init__(self, features: int = 128):
+        super().__init__()
+        self.head = nn.Sequential(
+            nn.Conv2d(features, features // 2, 3, padding=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Conv2d(features // 2, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 1, 1),
+        )
+
+    def forward(self, values):
+        return self.head(values)
+
+
 class TactileDPT(nn.Module):
     """Exact real-DIGIT NeuralFeels model configuration."""
 
@@ -126,13 +143,14 @@ class TactileDPT(nn.Module):
         )
         self.fusions = nn.ModuleList([Fusion() for _ in range(4)])
         self.head_depth = DepthHead()
+        self.head_contact = ContactHead()
 
     def _capture(self, index: int):
         def hook(_module, _inputs, output):
             self.activations[index] = output
         return hook
 
-    def forward(self, image):
+    def forward(self, image, return_contact: bool = False):
         self.transformer_encoders(image)
         previous = None
         for index in range(3, -1, -1):
@@ -140,7 +158,10 @@ class TactileDPT(nn.Module):
                 self.activations[self.hooks[index]]
             )
             previous = self.fusions[index](feature, previous)
-        return self.head_depth(previous)
+        depth = self.head_depth(previous)
+        if return_contact:
+            return depth, self.head_contact(previous)
+        return depth
 
 
 def resolve_base(cache_dir: Path = None) -> Path:
@@ -156,7 +177,13 @@ def resolve_base(cache_dir: Path = None) -> Path:
 
 def load_base(model: TactileDPT, checkpoint: Path) -> None:
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    model.load_state_dict(payload["model_state_dict"], strict=True)
+    missing, unexpected = model.load_state_dict(
+        payload["model_state_dict"], strict=False
+    )
+    if unexpected or any(
+        not key.startswith("head_contact.") for key in missing
+    ):
+        raise ValueError("base checkpoint is incompatible with the model")
 
 
 def freeze_encoder(model: TactileDPT) -> None:
@@ -171,8 +198,18 @@ def decoder_parameters(model: TactileDPT) -> Iterable[nn.Parameter]:
 
 
 def decoder_state(model: TactileDPT):
+    """Production-compatible decoder weights, encoder and contact head excl."""
     return {
         key: value.detach().cpu()
         for key, value in model.state_dict().items()
-        if not key.startswith("transformer_encoders.")
+        if not key.startswith(("transformer_encoders.", "head_contact."))
+    }
+
+
+def contact_head_state(model: TactileDPT):
+    """Experimental contact-head weights, kept out of the production field."""
+    return {
+        key: value.detach().cpu()
+        for key, value in model.state_dict().items()
+        if key.startswith("head_contact.")
     }

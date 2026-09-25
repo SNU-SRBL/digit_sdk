@@ -98,11 +98,20 @@ class ManualSupportDataset(Dataset):
 
 
 class BackgroundSupportDataset(Dataset):
-    def __init__(self, root: Path, partition: str):
+    def __init__(
+        self,
+        root: Path,
+        partition: str,
+        noise_sigma: float = 0.0,
+        seed: int = 0,
+    ):
         self.root = Path(root)
         records = _load_jsonl(self.root / "manifest.jsonl")
         by_id = {record["sample_id"]: record for record in records}
         split = active_split(self.root, "background")
+        self.noise_sigma = float(noise_sigma)
+        self.seed = int(seed)
+        self._noise_draw = 0
         self.records = [
             by_id[sample_id]
             for sample_id in split[partition]
@@ -117,6 +126,15 @@ class BackgroundSupportDataset(Dataset):
         image = cv2.imread(str(self.root / record["image_path"]), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(self.root / record["image_path"])
+        if self.noise_sigma > 0.0:
+            # ponytail: per-item RNG keyed by draw count; per-worker counters,
+            # deterministic only for a fixed worker count.
+            rng = np.random.default_rng((self.seed, index, self._noise_draw))
+            self._noise_draw += 1
+            noisy = image.astype(np.float32) + rng.normal(
+                0.0, self.noise_sigma, image.shape
+            )
+            image = np.clip(noisy, 0.0, 255.0).astype(np.uint8)
         mask = np.zeros(MODEL_SIZE[::-1], dtype=bool)
         return {
             "image": image_tensor(image),

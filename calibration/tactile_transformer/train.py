@@ -1,4 +1,13 @@
-"""Fine-tune a per-sensor decoder with ball depth and manual support."""
+"""Fine-tune a per-sensor decoder with ball depth and manual support.
+
+Beyond the default mixed protocol, the CLI can replay fixed no-contact
+background frames with generated per-pixel Gaussian noise
+(``--fixed-background-weight``, ``--background-noise-sigma``) and train an
+independent per-pixel contact-probability head
+(``--contact-head-weight``, ``--contact-gate-threshold``).  Any non-default
+setting is a different objective: write it to a distinct ``--output-root``
+instead of the canonical method directory.
+"""
 
 from __future__ import annotations
 
@@ -16,10 +25,12 @@ from torch.utils.data import DataLoader
 from calibration.dataset_schema import validate_dataset
 from calibration.tactile_transformer.data import (
     BallDepthDataset,
+    BackgroundSupportDataset,
     ManualSupportDataset,
     active_split,
 )
 from calibration.tactile_transformer.losses import (
+    contact_bce_loss,
     outside_zero_loss,
     region_balanced_depth_loss,
     support_loss,
@@ -29,6 +40,7 @@ from calibration.tactile_transformer.model import (
     BASE_REPOSITORY,
     BASE_REVISION,
     TactileDPT,
+    contact_head_state,
     decoder_parameters,
     decoder_state,
     freeze_encoder,
@@ -39,6 +51,36 @@ from calibration.tactile_transformer.model import (
 
 METHOD = "mixed"
 TRAINING_PROTOCOL = "mixed_ball_manual"
+EXPERIMENTAL_FLAGS = (
+    "fixed_background_weight",
+    "background_noise_sigma",
+    "contact_head_weight",
+    "contact_gate_threshold",
+)
+
+
+def experimental_objective(args) -> bool:
+    """True when any non-default objective flag is set."""
+    return any(
+        getattr(args, name, 0.0) > 0.0 for name in EXPERIMENTAL_FLAGS
+    )
+
+
+def guard_output_root(args) -> None:
+    """Keep experimental objectives out of the canonical method directory."""
+    if experimental_objective(args) and args.output_root is None:
+        raise ValueError(
+            "experimental objective flags "
+            f"({', '.join(EXPERIMENTAL_FLAGS)}) require an explicit "
+            "--output-root; the canonical method directory is reserved for "
+            f"the frozen {METHOD} protocol"
+        )
+
+
+def objective_name(args) -> str:
+    if not experimental_objective(args):
+        return METHOD
+    return METHOD + "_fixed_background"
 
 
 
@@ -50,26 +92,55 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _prediction_mm(model, images, maximum_depth_mm: float):
-    return model(images) * maximum_depth_mm
+def _forward_mm(model, images, args):
+    """Metric depth in millimetres, optionally gated by the contact head.
+
+    The gate is applied only in eval mode; training keeps raw depth so the
+    depth loss still shapes suppressed regions.
+    """
+    threshold = getattr(args, "contact_gate_threshold", 0.0)
+    wants_contact = (
+        threshold > 0.0
+        or getattr(args, "contact_head_weight", 0.0) > 0.0
+    )
+    if wants_contact:
+        depth, logits = model(images, return_contact=True)
+    else:
+        depth, logits = model(images), None
+    depth = depth * args.maximum_depth_mm
+    if threshold > 0.0 and not model.training:
+        gate = (torch.sigmoid(logits) >= threshold).to(depth.dtype)
+        depth = depth * gate
+    return depth, logits
 
 
-def ball_loss(prediction, target, args):
+def _contact_term(contact_logits, target_mask, args):
+    weight = getattr(args, "contact_head_weight", 0.0)
+    if contact_logits is None or weight <= 0.0:
+        return None
+    return weight * contact_bce_loss(contact_logits, target_mask)
+
+
+def ball_loss(prediction, target, args, contact_logits=None):
     loss = region_balanced_depth_loss(
         prediction,
         target,
         background_weight=args.background_weight,
     )
-    return loss + args.ball_support_weight * support_loss(
+    loss = loss + args.ball_support_weight * support_loss(
         prediction,
         target >= args.contact_threshold_mm,
         threshold_mm=args.contact_threshold_mm,
         temperature_mm=args.support_temperature_mm,
     )
+    term = _contact_term(
+        contact_logits, target >= args.contact_threshold_mm, args
+    )
+    return loss if term is None else loss + term
 
 
-def manual_loss(prediction, mask, args):
-    return args.manual_weight * (
+def manual_loss(prediction, mask, args, contact_logits=None):
+    loss = args.manual_weight * (
         support_loss(
             prediction,
             mask,
@@ -78,6 +149,19 @@ def manual_loss(prediction, mask, args):
         )
         + args.manual_zero_weight * outside_zero_loss(prediction, mask)
     )
+    term = _contact_term(contact_logits, mask, args)
+    return loss if term is None else loss + term
+
+
+def background_loss(prediction, args, contact_logits=None):
+    """Zero-depth and zero-contact supervision on fixed no-contact frames."""
+    loss = args.fixed_background_weight * outside_zero_loss(
+        prediction, torch.zeros_like(prediction, dtype=torch.bool)
+    )
+    term = _contact_term(
+        contact_logits, torch.zeros_like(prediction, dtype=torch.bool), args
+    )
+    return loss if term is None else loss + term
 
 
 def _scheduler(optimizer, total_steps: int, warmup_fraction: float):
@@ -95,6 +179,19 @@ def _scheduler(optimizer, total_steps: int, warmup_fraction: float):
 def _infinite(loader):
     while True:
         yield from loader
+
+
+def mixed_steps(ball_loader, manual_loader, background_loader=None):
+    """Steps a mixed epoch actually runs, shared by loop and scheduler.
+
+    Returns ``(steps_per_epoch, steps_per_type)`` for the included streams, so
+    the scheduler horizon always matches the executed optimizer steps.
+    """
+    loaders = [ball_loader, manual_loader]
+    if background_loader is not None:
+        loaders.append(background_loader)
+    steps_per_type = max(len(loader) for loader in loaders)
+    return len(loaders) * steps_per_type, steps_per_type
 
 
 def _optimizer_step(loss, optimizer, scheduler, scaler, parameters, args):
@@ -121,8 +218,8 @@ def train_ball_epoch(model, loader, optimizer, scheduler, scaler, parameters, ar
             dtype=torch.float16,
             enabled=args.amp,
         ):
-            prediction = _prediction_mm(model, images, args.maximum_depth_mm)
-            loss = ball_loss(prediction, targets, args)
+            prediction, contact_logits = _forward_mm(model, images, args)
+            loss = ball_loss(prediction, targets, args, contact_logits)
         _optimizer_step(
             loss, optimizer, scheduler, scaler, parameters, args
         )
@@ -132,7 +229,7 @@ def train_ball_epoch(model, loader, optimizer, scheduler, scaler, parameters, ar
 
 def train_mixed_epoch(
     model, ball_loader, manual_loader, optimizer, scheduler, scaler,
-    parameters, args,
+    parameters, args, background_loader=None,
 ):
     model.train()
     model.transformer_encoders.eval()
@@ -141,9 +238,16 @@ def train_mixed_epoch(
         "manual": _infinite(manual_loader),
     }
     losses = {"ball": [], "manual": []}
-    steps_per_type = max(len(ball_loader), len(manual_loader))
+    kinds = ["ball", "manual"]
+    if background_loader is not None:
+        iterators["background"] = _infinite(background_loader)
+        losses["background"] = []
+        kinds.append("background")
+    _, steps_per_type = mixed_steps(
+        ball_loader, manual_loader, background_loader
+    )
     for _ in range(steps_per_type):
-        for kind in ("ball", "manual"):
+        for kind in kinds:
             batch = next(iterators[kind])
             images = batch["image"].to(args.device, non_blocking=True)
             with torch.autocast(
@@ -151,13 +255,15 @@ def train_mixed_epoch(
                 dtype=torch.float16,
                 enabled=args.amp,
             ):
-                prediction = _prediction_mm(model, images, args.maximum_depth_mm)
+                prediction, contact_logits = _forward_mm(model, images, args)
                 if kind == "ball":
                     target = batch["depth_mm"].to(args.device, non_blocking=True)
-                    loss = ball_loss(prediction, target, args)
-                else:
+                    loss = ball_loss(prediction, target, args, contact_logits)
+                elif kind == "manual":
                     target = batch["mask"].to(args.device, non_blocking=True)
-                    loss = manual_loss(prediction, target, args)
+                    loss = manual_loss(prediction, target, args, contact_logits)
+                else:
+                    loss = background_loss(prediction, args, contact_logits)
             _optimizer_step(
                 loss, optimizer, scheduler, scaler, parameters, args
             )
@@ -174,7 +280,7 @@ def evaluate_ball(model, loader, args):
     for batch in loader:
         images = batch["image"].to(args.device, non_blocking=True)
         targets = batch["depth_mm"].to(args.device, non_blocking=True)
-        prediction = _prediction_mm(model, images, args.maximum_depth_mm)
+        prediction, _ = _forward_mm(model, images, args)
         error = prediction - targets
         contact = targets > 0
         contact_absolute.append(error[contact].abs().cpu())
@@ -205,9 +311,9 @@ def evaluate_manual(model, loader, args):
     for batch in loader:
         images = batch["image"].to(args.device, non_blocking=True)
         targets = batch["mask"].to(args.device, non_blocking=True).bool()
-        predictions = _prediction_mm(
-            model, images, args.maximum_depth_mm
-        ) >= args.contact_threshold_mm
+        predictions = _forward_mm(model, images, args)[0] >= (
+            args.contact_threshold_mm
+        )
         for prediction, target in zip(predictions, targets):
             false_positive += int((prediction & ~target).sum())
             negative += int((~target).sum())
@@ -229,15 +335,52 @@ def evaluate_manual(model, loader, args):
     }
 
 
-def checkpoint_rank(ball_metrics, manual_metrics):
-    """Lexicographic validation rank; lower is better."""
+@torch.no_grad()
+def evaluate_background(model, loader, args):
+    """No-contact depth statistics; the target is exactly zero everywhere."""
+    model.eval()
+    maximum = 0.0
+    positive_pixels = 0
+    pixels = 0
+    absolute_sum = 0.0
+    for batch in loader:
+        images = batch["image"].to(args.device, non_blocking=True)
+        prediction = _forward_mm(model, images, args)[0]
+        maximum = max(maximum, float(prediction.max()))
+        positive_pixels += int((prediction > 0.0).sum())
+        pixels += prediction.numel()
+        absolute_sum += float(prediction.abs().sum())
+    return {
+        "max_depth_mm": maximum,
+        "strict_positive_pixels": positive_pixels,
+        "pixels": pixels,
+        "mean_depth_mm": absolute_sum / max(pixels, 1),
+        "samples": len(loader.dataset),
+    }
+
+
+def checkpoint_rank(ball_metrics, manual_metrics, background_metrics=None):
+    """Lexicographic validation rank; lower is better.
+
+    When background replay is active, a candidate is eligible only if the
+    held-out no-contact max depth is below the 0.1 mm contract as well.
+    """
     ball_mae = ball_metrics["contact_mae_mm"]
     missed = manual_metrics["missed_contacts"]
-    eligible = missed == 0 and ball_mae <= 0.15
+    background_max = (
+        background_metrics["max_depth_mm"]
+        if background_metrics is not None else 0.0
+    )
+    eligible = (
+        missed == 0 and ball_mae <= 0.15 and background_max < 0.1
+    )
+    background_penalty = max(background_max - 0.1, 0.0)
     return (
         0 if eligible else 1,
         0 if eligible else missed,
+        0.0 if eligible else background_penalty,
         0.0 if eligible else max(ball_mae - 0.15, 0.0),
+        background_max,
         -manual_metrics["mean_dice"],
         manual_metrics["false_positive_rate"],
         ball_mae,
@@ -246,11 +389,22 @@ def checkpoint_rank(ball_metrics, manual_metrics):
 
 
 def _save_checkpoint(path, model, metadata):
+    """Write a production-compatible decoder plus optional experimental head.
+
+    Production only ever reads ``model_state_dict``, so the contact-probability
+    head is stored in a separate field and never leaks into that dict.
+    """
     state = decoder_state(model)
     if any(key.startswith("transformer_encoders.") for key in state):
         raise RuntimeError("decoder checkpoint contains encoder weights")
+    if any(key.startswith("head_contact.") for key in state):
+        raise RuntimeError("decoder checkpoint contains contact head weights")
+    payload = {"model_state_dict": state, "metadata": metadata}
+    head = contact_head_state(model)
+    if head:
+        payload["contact_head_state_dict"] = head
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"model_state_dict": state, "metadata": metadata}, path)
+    torch.save(payload, path)
 
 
 def _load_decoder(model, path):
@@ -259,9 +413,13 @@ def _load_decoder(model, path):
         payload["model_state_dict"], strict=False
     )
     if unexpected or any(
-        not key.startswith("transformer_encoders.") for key in missing
+        not key.startswith(("transformer_encoders.", "head_contact."))
+        for key in missing
     ):
         raise ValueError("decoder checkpoint is incompatible with base model")
+    head = payload.get("contact_head_state_dict")
+    if head:
+        model.load_state_dict(head, strict=False)
 
 
 def _loaders(root, args):
@@ -271,7 +429,7 @@ def _loaders(root, args):
         "pin_memory": args.device.type == "cuda",
     }
     generator = torch.Generator().manual_seed(args.seed)
-    return {
+    loaders = {
         "ball_train": DataLoader(
             BallDepthDataset(root, "train"), shuffle=True,
             generator=generator, **common,
@@ -288,6 +446,19 @@ def _loaders(root, args):
             shuffle=False, **common,
         ),
     }
+    if args.fixed_background_weight > 0.0:
+        loaders["background_train"] = DataLoader(
+            BackgroundSupportDataset(
+                root, "train", noise_sigma=args.background_noise_sigma,
+                seed=args.seed,
+            ),
+            shuffle=True, generator=generator, **common,
+        )
+        loaders["background_validation"] = DataLoader(
+            BackgroundSupportDataset(root, "validation"),
+            shuffle=False, **common,
+        )
+    return loaders
 
 
 def _base_metadata(args, dataset_id, root):
@@ -297,7 +468,10 @@ def _base_metadata(args, dataset_id, root):
         "dataset_id": dataset_id,
         "ball_split_id": active_split(root, "ball")["split_id"],
         "manual_mask_split_id": active_split(root, "manual_mask")["split_id"],
-        "objective": METHOD,
+        "objective": objective_name(args),
+        "objective_parameters": {
+            name: getattr(args, name) for name in EXPERIMENTAL_FLAGS
+        },
         "seed": args.seed,
         "maximum_depth_mm": args.maximum_depth_mm,
         "contact_threshold_mm": args.contact_threshold_mm,
@@ -307,7 +481,10 @@ def _base_metadata(args, dataset_id, root):
             "filename": BASE_FILENAME,
             "revision": BASE_REVISION,
         },
-        "fine_tuned_parameters": "reassembly, fusion, depth head",
+        "fine_tuned_parameters": (
+            "reassembly, fusion, depth head"
+            + (", contact head" if args.contact_head_weight > 0.0 else "")
+        ),
         "encoder_frozen": True,
     }
 
@@ -333,6 +510,22 @@ def parse_args(argv=None):
     parser.add_argument("--ball-support-weight", type=float, default=0.1)
     parser.add_argument("--manual-weight", type=float, default=0.1)
     parser.add_argument("--manual-zero-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--fixed-background-weight", type=float, default=0.0,
+        help="weight of zero-depth replay on fixed no-contact frames",
+    )
+    parser.add_argument(
+        "--background-noise-sigma", type=float, default=0.0,
+        help="per-pixel Gaussian sigma (8-bit units) for background replay",
+    )
+    parser.add_argument(
+        "--contact-head-weight", type=float, default=0.0,
+        help="weight of the independent contact-probability BCE",
+    )
+    parser.add_argument(
+        "--contact-gate-threshold", type=float, default=0.0,
+        help="eval-only contact-probability gate; 0 disables the gate",
+    )
     parser.add_argument("--contact-threshold-mm", type=float, default=0.1)
     parser.add_argument("--support-temperature-mm", type=float, default=0.02)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -346,6 +539,7 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    guard_output_root(args)
     seed_everything(args.seed)
     root = args.sensors_root / args.serial / "calibration"
     summary = validate_dataset(root)
@@ -405,8 +599,9 @@ def main(argv=None):
     _load_decoder(model, stage1_path)
 
     final_path = output / "decoder.pth"
-    steps_per_epoch = 2 * max(
-        len(loaders["ball_train"]), len(loaders["manual_train"])
+    background_loader = loaders.get("background_train")
+    steps_per_epoch, _ = mixed_steps(
+        loaders["ball_train"], loaders["manual_train"], background_loader
     )
     optimizer = torch.optim.AdamW(
         parameters,
@@ -424,6 +619,7 @@ def main(argv=None):
         train_losses = train_mixed_epoch(
             model, loaders["ball_train"], loaders["manual_train"],
             optimizer, scheduler, scaler, parameters, args,
+            background_loader=background_loader,
         )
         ball_metrics = evaluate_ball(
             model, loaders["ball_validation"], args
@@ -431,7 +627,15 @@ def main(argv=None):
         manual_metrics = evaluate_manual(
             model, loaders["manual_validation"], args
         )
-        rank = checkpoint_rank(ball_metrics, manual_metrics)
+        background_metrics = (
+            evaluate_background(
+                model, loaders["background_validation"], args
+            )
+            if "background_validation" in loaders else None
+        )
+        rank = checkpoint_rank(
+            ball_metrics, manual_metrics, background_metrics
+        )
         row = {
             "epoch": epoch,
             "train": train_losses,
@@ -439,6 +643,8 @@ def main(argv=None):
             "manual": manual_metrics,
             "eligible": rank[0] == 0,
         }
+        if background_metrics is not None:
+            row["background"] = background_metrics
         history["stage2"].append(row)
         if best_rank is None or rank < best_rank:
             best_rank = rank
@@ -453,7 +659,11 @@ def main(argv=None):
             f"ball_mae={ball_metrics['contact_mae_mm']:.4f} "
             f"dice={manual_metrics['mean_dice']:.4f} "
             f"fpr={manual_metrics['false_positive_rate']:.4f} "
-            f"missed={manual_metrics['missed_contacts']}",
+            f"missed={manual_metrics['missed_contacts']}"
+            + (
+                f" bg_max={background_metrics['max_depth_mm']:.4f}"
+                if background_metrics is not None else ""
+            ),
             flush=True,
         )
         if stale >= args.patience:
@@ -464,8 +674,14 @@ def main(argv=None):
         "ball": evaluate_ball(model, loaders["ball_validation"], args),
         "manual": evaluate_manual(model, loaders["manual_validation"], args),
     }
+    if "background_validation" in loaders:
+        selected_validation["background"] = evaluate_background(
+            model, loaders["background_validation"], args
+        )
     selected_validation["eligible"] = checkpoint_rank(
-        selected_validation["ball"], selected_validation["manual"]
+        selected_validation["ball"],
+        selected_validation["manual"],
+        selected_validation.get("background"),
     )[0] == 0
     metadata.update({
         "arguments": {
