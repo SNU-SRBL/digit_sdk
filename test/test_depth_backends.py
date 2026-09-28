@@ -74,11 +74,23 @@ def test_explicit_backend_must_be_known(tmp_path):
 
 def test_shared_artifact_resolution_and_missing_error(tmp_path):
     root = _make_sensors_root(tmp_path, kind="onnx")
-    path = _find_shared_artifact(root, SERIALS, "dpt_shared_encoder.onnx")
+    path = _find_shared_artifact(root, "dpt_shared_encoder.onnx")
     assert path == root / "D21119" / "model" / "depth" / "dpt_shared_encoder.onnx"
     empty = _make_sensors_root(tmp_path / "empty", kind=None)
     with pytest.raises(FileNotFoundError):
-        _find_shared_artifact(empty, SERIALS, "dpt_shared_encoder.onnx")
+        _find_shared_artifact(empty, "dpt_shared_encoder.onnx")
+
+
+def test_shared_engine_resolves_for_serials_without_their_own_copy(tmp_path):
+    """Requested serials reuse the shared encoder stored under another serial."""
+    requested = ("D21273", "D21242")
+    root = _make_sensors_root(tmp_path, serials=SERIALS, kind="engine")
+    # The shared engine lives only under D21119, which is not requested.
+    assert _find_shared_artifact(root, "dpt_shared_encoder_trt_fp16.engine") == (
+        root / "D21119" / "model" / "depth" / "dpt_shared_encoder_trt_fp16.engine"
+    )
+    assert _artifacts_present(root, requested, "engine")
+    assert _resolve_backend("auto", root, requested) == "trt_fp16"
 
 
 @pytest.mark.skipif(

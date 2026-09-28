@@ -46,15 +46,22 @@ class DepthBackend:
         return DepthInput(_image_bytes(image), image.shape[:2])
 
 
+def _registered_shared_artifacts(sensors_root, name: str) -> list[Path]:
+    """Locate shared encoder artifacts anywhere in the sensor registry.
+
+    The encoder is stored once for all serials (currently under D21119), so
+    discovery spans every registered serial rather than only the requested
+    ones.
+    """
+    return sorted(Path(sensors_root).glob(f"*/model/depth/{name}"))
+
+
 def _artifacts_present(sensors_root, serials: Sequence[str], kind: str) -> bool:
     """True when every serial has a decoder artifact and a shared encoder exists."""
     shared_name = _SHARED_TRT_NAME if kind == "engine" else _SHARED_ONNX_NAME
     decoder_name = _DECODER_TRT_NAME if kind == "engine" else _DECODER_ONNX_NAME
     root = Path(sensors_root)
-    shared = any(
-        (root / serial / "model" / "depth" / shared_name).is_file()
-        for serial in serials
-    )
+    shared = bool(_registered_shared_artifacts(root, shared_name))
     decoders = all(
         (root / serial / "model" / "depth" / decoder_name.format(serial=serial)).is_file()
         for serial in serials
@@ -62,13 +69,11 @@ def _artifacts_present(sensors_root, serials: Sequence[str], kind: str) -> bool:
     return shared and decoders
 
 
-def _find_shared_artifact(sensors_root, serials: Sequence[str], name: str) -> Path:
-    """Locate the one shared encoder artifact in any serial's model directory."""
-    root = Path(sensors_root)
-    for serial in serials:
-        path = root / serial / "model" / "depth" / name
-        if path.is_file():
-            return path
+def _find_shared_artifact(sensors_root, name: str) -> Path:
+    """Locate the one shared encoder artifact anywhere in the sensor registry."""
+    matches = _registered_shared_artifacts(sensors_root, name)
+    if matches:
+        return matches[0]
     raise FileNotFoundError(
         f"{name} not found under {sensors_root}; "
         "run scripts/export_trt_fp16.py first"
@@ -238,7 +243,7 @@ class OnnxDepthBackend(DepthBackend):
 
         root = Path(sensors_root)
         self._maximum_depth_mm = _load_depth_limits(root, serials)
-        shared = _find_shared_artifact(root, serials, _SHARED_ONNX_NAME)
+        shared = _find_shared_artifact(root, _SHARED_ONNX_NAME)
         decoder_paths = {
             serial: root / serial / "model" / "depth"
             / _DECODER_ONNX_NAME.format(serial=serial)
@@ -345,7 +350,7 @@ class TrtFP16DepthBackend(DepthBackend):
         self._trt = trt
         root = Path(sensors_root)
         self._maximum_depth_mm = _load_depth_limits(root, serials)
-        shared = _find_shared_artifact(root, serials, _SHARED_TRT_NAME)
+        shared = _find_shared_artifact(root, _SHARED_TRT_NAME)
         decoder_paths = {
             serial: root / serial / "model" / "depth"
             / _DECODER_TRT_NAME.format(serial=serial)

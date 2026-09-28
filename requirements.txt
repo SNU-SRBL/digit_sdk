@@ -3,7 +3,7 @@
 # Core dependencies
 pillow>=10.0.0
 numpy>=1.26.4
-opencv-python>=4.9.0
+opencv-contrib-python==4.14.0.94
 scipy>=1.13.1
 PyYaml>=6.0.1
 matplotlib>=3.9.0
@@ -12,7 +12,7 @@ nanogui
 open3d>=0.17.0
 scikit-learn>=1.3.0
 tqdm>=4.65.0
-pyudev
+pyudev>=0.24.0
 
 # Deep learning (depth estimation)
 torch>=2.1.0

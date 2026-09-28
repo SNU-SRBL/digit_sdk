@@ -123,6 +123,8 @@ def launch_setup(context, *_args, **_kwargs):
     shm_connect_timeout = float(
         LaunchConfiguration("shm_connect_timeout").perform(context)
     )
+    capture_fps = LaunchConfiguration("capture_fps").perform(context).strip()
+    diagnostics_dir = LaunchConfiguration("diagnostics_dir").perform(context).strip()
 
     affinity = _get_tactile_affinity()
     camera_cores = affinity.get("camera_shm", [0, 1, 2, 3])
@@ -145,13 +147,23 @@ def launch_setup(context, *_args, **_kwargs):
 
     for index, serial in enumerate(sensors):
         core = camera_cores[index] if index < len(camera_cores) else index
+        camera_cmd = [
+            camera_executable,
+            "--serial", serial,
+            "--sensors-root", sensors_root,
+            "--cpu-affinity", str(core),
+        ]
+        # Unset capture_fps keeps each sensor's YAML framerate.
+        if capture_fps:
+            camera_cmd += ["--capture-fps", capture_fps]
+        if diagnostics_dir:
+            # Per-serial subdirectory so concurrent cameras never share files.
+            camera_cmd += [
+                "--diagnostics-dir",
+                os.path.join(diagnostics_dir, serial),
+            ]
         nodes.append(ExecuteProcess(
-            cmd=[
-                camera_executable,
-                "--serial", serial,
-                "--sensors-root", sensors_root,
-                "--cpu-affinity", str(core),
-            ],
+            cmd=camera_cmd,
             name=f"camera_{serial}",
             output="screen",
         ))
@@ -266,6 +278,20 @@ def generate_launch_description():
             "shm_connect_timeout",
             default_value="30.0",
             description="Seconds to wait for surface SHM to appear at startup",
+        ),
+        DeclareLaunchArgument(
+            "capture_fps",
+            default_value="",
+            description=(
+                "Optional camera capture FPS override; empty keeps per-sensor YAML"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "diagnostics_dir",
+            default_value="",
+            description=(
+                "Optional recovery-window frame diagnostics output directory"
+            ),
         ),
         OpaqueFunction(function=launch_setup),
     ])

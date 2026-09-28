@@ -33,6 +33,8 @@ from digit_sdk.camera import Camera
 from digit_sdk.shm_protocol import CAMERA_HEADER_SIZE, write_camera_frame
 
 SHM_HEADER = CAMERA_HEADER_SIZE
+STARTUP_CONNECT_TIMEOUT_S = 30.0
+STARTUP_CONNECT_RETRY_S = 0.5
 
 
 def _parse_affinity(spec: str):
@@ -53,13 +55,48 @@ def shm_size_for(camera: Camera) -> int:
     return SHM_HEADER + camera.raw_imgh * camera.raw_imgw * 3
 
 
-def run(serial: str, sensors_root: str, verbose: bool = False):
+def connect_with_retry(
+    camera: Camera,
+    *,
+    verbose: bool,
+    timeout_s: float = STARTUP_CONNECT_TIMEOUT_S,
+) -> None:
+    """Wait for a newly enumerated DIGIT UVC stream to become readable."""
+    deadline = time.monotonic() + timeout_s
+    attempts = 0
+    while True:
+        try:
+            camera.connect(verbose=verbose)
+            return
+        except RuntimeError as error:
+            camera.release()
+            attempts += 1
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"camera startup failed after {attempts} attempts: {error}"
+                ) from error
+            print(
+                f"Camera {camera.serial}: startup attempt {attempts} failed; retrying",
+                flush=True,
+            )
+            time.sleep(STARTUP_CONNECT_RETRY_S)
+
+
+def run(
+    serial: str,
+    sensors_root: str,
+    verbose: bool = False,
+    capture_fps: float = None,
+    diagnostics_dir: str = "",
+):
     """Run the main capture loop; writes frames to shared memory."""
     shm_name = f"tactile_{serial}"
 
     # Create camera first — SHM size depends on resolution
-    camera = Camera(serial=serial, sensors_root=sensors_root)
-    camera.connect(verbose=verbose)
+    camera = Camera(serial=serial, sensors_root=sensors_root, framerate=capture_fps)
+    if diagnostics_dir:
+        camera.enable_diagnostics(diagnostics_dir)
+    connect_with_retry(camera, verbose=verbose)
 
     # Clean up stale shm if any
     try:
@@ -140,6 +177,10 @@ def main():
                         help='Verbose output')
     parser.add_argument('--cpu-affinity', type=str, default='',
                         help='CPU core affinity (e.g. "0-3" or "0,2,4")')
+    parser.add_argument('--capture-fps', type=float, default=None,
+                        help='Override sensor YAML capture FPS (unset keeps YAML)')
+    parser.add_argument('--diagnostics-dir', type=str, default='',
+                        help='Enable bounded recovery-window frame diagnostics')
     args = parser.parse_args()
 
     if args.cpu_affinity:
@@ -149,7 +190,10 @@ def main():
 
     try:
         run(serial=args.serial, sensors_root=args.sensors_root,
-            verbose=args.verbose)
+            verbose=args.verbose, capture_fps=args.capture_fps,
+            diagnostics_dir=args.diagnostics_dir)
+    except KeyboardInterrupt:
+        return
     except Exception as e:
         print(f"FATAL: {e}", file=sys.stderr, flush=True)
         # Clean up shm on fatal error

@@ -14,7 +14,7 @@ setup(
     install_requires=[
         "pillow==10.0.0",
         "numpy==1.26.4",
-        "opencv-python>=4.9.0",
+        "opencv-contrib-python==4.14.0.94",
         "scipy>=1.13.1",
         "torch>=2.1.0",
         "torchvision>=0.16.0",
@@ -25,6 +25,7 @@ setup(
         "open3d>=0.17.0",
         "scikit-learn>=1.3.0",
         "tqdm>=4.65.0",
+        "pyudev>=0.24.0",
         # Force estimation dependencies (Sparsh)
         "einops>=0.6",
         "timm>=0.9",
