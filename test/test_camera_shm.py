@@ -1,5 +1,4 @@
 import importlib.util
-import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -69,26 +68,22 @@ def _fake_camera():
     return camera
 
 
-def test_run_defaults_keep_sensor_yaml_and_disable_diagnostics():
+def test_run_defaults_keep_sensor_yaml_framerate():
     camera = _fake_camera()
     camera_cls = _run_once(camera)
 
     camera_cls.assert_called_once_with(
         serial="DTEST", sensors_root="/root/sensors", framerate=None
     )
-    camera.enable_diagnostics.assert_not_called()
 
 
-def test_run_passes_capture_fps_and_diagnostics_when_configured():
+def test_run_passes_capture_fps_when_configured():
     camera = _fake_camera()
-    camera_cls = _run_once(
-        camera, capture_fps=30.0, diagnostics_dir="/tmp/digit_diagnostics"
-    )
+    camera_cls = _run_once(camera, capture_fps=30.0)
 
     camera_cls.assert_called_once_with(
         serial="DTEST", sensors_root="/root/sensors", framerate=30.0
     )
-    camera.enable_diagnostics.assert_called_once_with("/tmp/digit_diagnostics")
 
 
 def _launch_module():
@@ -114,10 +109,13 @@ def _camera_commands(module, serials=("DTEST",), **overrides):
         "publish_raw": "false",
         "publish_depth": "false",
         "publish_pointcloud": "false",
+        "publish_force": "false",
+        "color_pointcloud_with_force": "false",
+        "models_root": "/root/models",
+        "force_rate": "30.0",
         "point_sample_mm": "0.2",
         "shm_connect_timeout": "30.0",
         "capture_fps": "",
-        "diagnostics_dir": "",
     }
     values.update(overrides)
     context = launch.LaunchContext()
@@ -142,35 +140,12 @@ def test_launch_omits_capture_flags_when_unset():
     args = _camera_commands(_launch_module())[0]
 
     assert "--capture-fps" not in args
-    assert "--diagnostics-dir" not in args
-    assert not any("digit_diagnostics" in value for value in args)
 
 
 def test_launch_passes_capture_flags_only_when_configured():
     args = _camera_commands(
         _launch_module(),
         capture_fps="30",
-        diagnostics_dir="/tmp/digit_diagnostics",
     )[0]
 
     assert args[args.index("--capture-fps") + 1] == "30"
-    assert args[args.index("--diagnostics-dir") + 1] == os.path.join(
-        "/tmp", "digit_diagnostics", "DTEST"
-    )
-
-
-def test_launch_scopes_diagnostics_dir_per_serial():
-    commands = _camera_commands(
-        _launch_module(),
-        serials=("DTEST", "DOTHER"),
-        diagnostics_dir="/tmp/digit_diagnostics",
-    )
-
-    dirs = [
-        args[args.index("--diagnostics-dir") + 1] for args in commands
-    ]
-    assert dirs == [
-        os.path.join("/tmp", "digit_diagnostics", "DTEST"),
-        os.path.join("/tmp", "digit_diagnostics", "DOTHER"),
-    ]
-    assert len(set(dirs)) == len(dirs)

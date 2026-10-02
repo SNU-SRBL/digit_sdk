@@ -53,7 +53,7 @@ def test_production_depth_limit_is_sensor_configured():
     or not (MODEL_ROOT / "decoder.pth").is_file()
     or _ball_image_path("D21275") is None,
     reason=(
-        "CUDA, a promoted clean D21275 decoder, and calibration ball images "
+        "CUDA, a trained clean D21275 decoder, and calibration ball images "
         "are required; ball images are gitignored data, download separately"
     ),
 )
@@ -77,7 +77,7 @@ def test_production_estimator_smoke_uses_selected_decoder():
     )
     or any(_ball_image_path(serial) is None for serial in SERIALS),
     reason=(
-        "CUDA, all four promoted decoders, and calibration ball images are "
+        "CUDA, all four trained decoders, and calibration ball images are "
         "required; ball images are gitignored data, download separately"
     ),
 )
@@ -90,10 +90,10 @@ def test_compiled_four_sensor_batch_matches_eager_path():
 
     estimator = DepthEstimator(SERIALS, root, "cuda", backend="torch")
     compiled = estimator.estimate_batch(frames)
-    compiled_function = estimator._compiled_full_batch
-    estimator._compiled_full_batch = None
+    compiled_function = estimator._backend._compiled_full_batch
+    estimator._backend._compiled_full_batch = None
     eager = estimator.estimate_batch(frames)
-    estimator._compiled_full_batch = compiled_function
+    estimator._backend._compiled_full_batch = compiled_function
 
     for serial in SERIALS:
         difference = np.abs(compiled[serial] - eager[serial])

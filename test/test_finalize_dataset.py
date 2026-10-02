@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 import yaml
 
 from calibration.collect_background import save_background_reference
@@ -30,9 +31,66 @@ def test_manual_split_keeps_physical_groups_together():
         {"sample_id": "c", "split_group": "c"},
     ]
 
-    assignment = manual_partitions(rows, validation_count=1, test_count=1)
+    assignment = manual_partitions(rows)
 
     assert assignment["a1"] == assignment["a2"]
+
+
+def test_manual_split_defaults_to_sorted_hash_proportions():
+    rows = [
+        {"sample_id": f"contact-{index}", "split_group": f"group-{index}"}
+        for index in range(100)
+    ]
+
+    first = manual_partitions(rows)
+    second = manual_partitions(rows)
+
+    counts = {
+        partition: list(first.values()).count(partition)
+        for partition in ("train", "validation", "test")
+    }
+    assert counts == {"train": 60, "validation": 20, "test": 20}
+    assert first == second
+
+
+def test_manual_split_rounds_remainder_to_train():
+    rows = [
+        {"sample_id": f"contact-{index}", "split_group": f"group-{index}"}
+        for index in range(101)
+    ]
+
+    assignment = manual_partitions(rows)
+
+    counts = {
+        partition: list(assignment.values()).count(partition)
+        for partition in ("train", "validation", "test")
+    }
+    assert counts == {"train": 61, "validation": 20, "test": 20}
+
+
+def test_manual_split_requires_valid_fractions():
+    rows = [{"sample_id": "a", "split_group": "a"}]
+
+    for validation_fraction, test_fraction in (
+        (0.0, 0.2),
+        (1.0, 0.2),
+        (0.2, -0.1),
+        (0.5, 0.5),
+        (0.7, 0.4),
+    ):
+        with pytest.raises(ValueError):
+            manual_partitions(rows, validation_fraction, test_fraction)
+
+
+def test_manual_split_gives_every_partition_a_group():
+    rows = [
+        {"sample_id": f"contact-{index}", "split_group": f"group-{index}"}
+        for index in range(3)
+    ]
+
+    assignment = manual_partitions(rows)
+
+    assert set(assignment.values()) == {"train", "validation", "test"}
 
 
 def test_background_split_has_exact_holdout_counts():
@@ -152,7 +210,6 @@ def test_finalizes_annotated_partition_free_inboxes(tmp_path):
     output = sensor / "calibration_next"
     result = finalize_dataset(
         sensors, "DTEST", output,
-        manual_validation_count=1, manual_test_count=1,
         background_validation_count=1, background_test_count=1,
     )
 

@@ -150,20 +150,6 @@ class SparshEncoder(nn.Module):
         """Get intermediate features from specified layers."""
         return self.intermediate_features
 
-    def patch_embed(self, x: torch.Tensor) -> torch.Tensor:
-        """Compatibility wrapper returning [B, C, H, W] patch features."""
-        tokens = self.model.patch_embed(x)
-        if tokens.ndim == 3:
-            batch_size, num_tokens, channels = tokens.shape
-            grid_h = self.img_size // self.patch_size
-            grid_w = self.img_size // self.patch_size
-            if num_tokens != grid_h * grid_w:
-                raise ValueError(
-                    f"Unexpected patch token count {num_tokens}; expected {grid_h * grid_w}"
-                )
-            return tokens.transpose(1, 2).reshape(batch_size, channels, grid_h, grid_w)
-        return tokens
-
 
 class ForceFieldDecoder(nn.Module):
     """Sparsh-equivalent force-field decoder for inference."""

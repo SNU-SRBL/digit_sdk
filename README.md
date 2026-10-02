@@ -31,7 +31,7 @@ Force estimation is a separate, optional
 | Geometric supervision | GS-SDK-inspired calibration | 3, 5, 7, and 9 mm sphere contacts |
 | Real-contact supervision | Custom data | Binary manual contact masks |
 | Temporal refinement | NeuralFeels finite weighted blend | Fixed five-frame FIR per sensor |
-| Contact suppression | Runtime postprocessing | `0.2 mm` cutoff by default |
+| Contact suppression | Runtime postprocessing | `0.1 mm` cutoff by default |
 | Force estimation | Sparsh | Optional, separate from depth |
 | Additional depth influence | digit-depth | Per-sensor DIGIT calibration |
 
@@ -46,7 +46,7 @@ DIGIT RGB
   → sensor-specific decoder
   → raw metric depth in mm
   → five-frame NeuralFeels FIR
-  → depth_cutoff (default 0.2 mm)
+  → depth_cutoff (default 0.1 mm)
   → ROS depth in metres / point cloud in metres
 ```
 
@@ -56,7 +56,7 @@ or a gap greater than `100 ms`. The cutoff is applied afterward and does not
 affect model inference, FIR history, or training. Set `depth_cutoff:=0.0` to
 disable thresholding.
 
-Production decoders use the `mixed` objective, combining ball-depth
+Production decoders use the `mixed_background` objective, combining ball-depth
 supervision with manual real-contact support.
 
 ## Features
@@ -66,7 +66,7 @@ supervision with manual real-contact support.
 - One shared batched encoder and sensor-specific decoders.
 - Generation-checked camera and surface shared memory.
 - Latest-frame scheduling without an unbounded queue.
-- STM32 tear detection, stream recovery, and frame-rate watchdog.
+- Row-discontinuity detection, stream recovery, and frame-rate watchdog.
 - Independent raw, depth, and point-cloud outputs.
 - Metric `32FC1` ROS depth and metric point clouds.
 - Optional Sparsh force estimation.
@@ -76,7 +76,7 @@ supervision with manual real-contact support.
 - Ubuntu 22.04
 - ROS 2 Humble
 - Python 3.10 or newer
-- DIGIT tactile sensors, tested at `320×240 @ 60 Hz`
+- DIGIT tactile sensors at QVGA (`320×240`); the default capture rate is 30 Hz
 - CUDA-capable GPU recommended for production depth and force estimation
 
 CPU depth inference is supported for development, but the multi-sensor rate
@@ -109,7 +109,9 @@ python3 -m pip install -e ".[gpu]"
 ```
 
 The download is approximately `1.7 GB` and stores Sparsh models under
-`models/`.
+`models/`. Package installation places that directory at
+`share/digit_sdk/models`; `models_root:=/absolute/path/to/models` overrides it
+when checkpoints are stored elsewhere.
 
 ### Tactile depth base weights
 
@@ -134,8 +136,8 @@ sensors/<serial>/model/depth/decoder.pth
 
 The YAML file defines the camera stream and sensor geometry. The calibration
 workflow produces the decoder and records `maximum_depth_mm` in that sensor's
-YAML. The decoder is a local, non-versioned production artifact. Calibrate
-and promote one decoder for each physical sensor.
+YAML. The decoder is a local, non-versioned production artifact. Calibrate and
+train one decoder for each physical sensor.
 
 ## ROS 2 launch
 
@@ -154,9 +156,10 @@ ros2 launch digit_sdk multi_sensor_tactile_streamer.launch.py \
   publish_raw:=true \
   publish_depth:=true \
   publish_pointcloud:=false \
-  depth_cutoff:=0.2 \
+  capture_fps:=30 \
+  depth_cutoff:=0.1 \
   model_device:=cuda \
-  rate:=60.0
+  rate:=30.0
 ```
 
 ### Published topics
@@ -172,12 +175,13 @@ ros2 launch digit_sdk multi_sensor_tactile_streamer.launch.py \
 | Parameter | Default | Description |
 |---|---:|---|
 | `serials` | auto | Comma-separated serials; empty discovers registered sensors |
-| `rate` | `60.0` | Requested inference and publication rate in Hz |
+| `rate` | `30.0` | Requested inference and publication rate in Hz |
+| `capture_fps` | `30.0` | Camera capture rate in Hz |
 | `model_device` | `cuda` | `cuda` or `cpu` |
 | `publish_raw` | `true` | Launch raw-image publishers |
 | `publish_depth` | `true` | Publish `32FC1` metric depth |
 | `publish_pointcloud` | `false` | Derive and publish point clouds |
-| `depth_cutoff` | `0.2` | Cutoff in millimetres; `0` disables it |
+| `depth_cutoff` | `0.1` | Cutoff in millimetres; `0` disables it |
 | `point_sample_mm` | `0.2` | Point-cloud spacing; `0` retains every pixel |
 | `sensors_root` | auto | Sensor configuration and model root |
 
@@ -212,11 +216,11 @@ depth.
 
 ## Camera reliability
 
-At QVGA and 60 Hz, DIGIT STM32 DMA aliasing can combine portions of adjacent
-frames into a horizontal tear without a USB/V4L2 error. `Camera` detects the
-characteristic row discontinuity, performs a stream recovery, warms up, and
-resumes with the next committed source frame. A frame-rate watchdog triggers
-the same recovery after sustained abnormal capture gaps.
+Some QVGA streams have shown row discontinuities without a USB/V4L2 error.
+The cause has not been identified. `Camera` detects the discontinuity,
+performs a stream recovery, warms up, and resumes with the next committed
+source frame. A frame-rate watchdog triggers the same recovery after sustained
+abnormal capture gaps.
 
 FIR state resets automatically when recovery creates a timestamp discontinuity
 greater than `100 ms`.
@@ -232,29 +236,13 @@ The per-sensor workflow is:
 5. Annotate binary contact masks.
 6. Finalize deterministic train, validation, and test splits.
 7. Fine-tune decoders from the frozen Tactile Transformer.
-8. Install the selected `mixed` decoder.
+8. Train and install the selected `mixed_background` decoder.
 
 Commands and data contracts are documented in the
 [calibration README](calibration/README.md).
 
 Calibration is sensor-specific. Recalibrate after changes to the gel, optical
 surface, illumination, camera geometry, or sensor hardware.
-
-## Performance
-
-Measured on the current RTX 3050 system:
-
-| Metric | Value |
-|---|---:|
-| Four-sensor model compute | `15.88 ms` mean, `16.43 ms` p95 |
-| Model compute throughput | `62.97` fresh batches/s |
-| Four physical camera SHM commits | `59.68–59.72 Hz` |
-| Four physical fresh depth/point-cloud generations | `54.76–54.86 Hz` |
-| Four-sensor FIR-only cost | `0.44 ms` median, `0.88 ms` p95 |
-
-The current four-sensor pipeline produces approximately `54.8 Hz` fresh depth
-per sensor on this machine. The intended deployment is a higher-end GPU
-workstation.
 
 ## Python camera API
 

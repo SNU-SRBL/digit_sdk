@@ -23,6 +23,7 @@ _DEFAULT_TACTILE_AFFINITY = {
     "raw_publisher": [6, 7, 8, 9],
     "surface_publisher": [6, 7, 8, 9],
     "pointcloud_publisher": [6, 7, 8, 9],
+    "force_publisher": [6, 7, 8, 9],
 }
 
 
@@ -84,6 +85,7 @@ def _serial_scoped_cleanup(serial: str) -> None:
         rf"camera_shm .*--serial {serial}( |$)",
         rf"raw_publisher .*serial.{serial}( |$)",
         rf"surface_publisher .*serial.{serial}( |$)",
+        rf"force_publisher .*serial.{serial}( |$)",
     ):
         subprocess.run(
             ["pkill", "-2", "-f", pattern],
@@ -92,7 +94,7 @@ def _serial_scoped_cleanup(serial: str) -> None:
         )
     shm_names = [
         f"/dev/shm/tactile_{serial}{suffix}"
-        for suffix in ("", "_surface", "_force")
+        for suffix in ("", "_surface")
     ]
     subprocess.run(
         ["rm", "-f", *shm_names],
@@ -117,6 +119,15 @@ def launch_setup(context, *_args, **_kwargs):
     publish_pointcloud = (
         LaunchConfiguration("publish_pointcloud").perform(context) == "true"
     )
+    publish_force = (
+        LaunchConfiguration("publish_force").perform(context) == "true"
+    )
+    color_pointcloud_with_force = (
+        LaunchConfiguration("color_pointcloud_with_force").perform(context)
+        == "true"
+    )
+    models_root = LaunchConfiguration("models_root").perform(context)
+    force_rate = float(LaunchConfiguration("force_rate").perform(context))
     point_sample_mm = float(
         LaunchConfiguration("point_sample_mm").perform(context)
     )
@@ -124,7 +135,6 @@ def launch_setup(context, *_args, **_kwargs):
         LaunchConfiguration("shm_connect_timeout").perform(context)
     )
     capture_fps = LaunchConfiguration("capture_fps").perform(context).strip()
-    diagnostics_dir = LaunchConfiguration("diagnostics_dir").perform(context).strip()
 
     affinity = _get_tactile_affinity()
     camera_cores = affinity.get("camera_shm", [0, 1, 2, 3])
@@ -139,6 +149,9 @@ def launch_setup(context, *_args, **_kwargs):
     )
     pointcloud_cores = _list_to_affinity_string(
         affinity.get("pointcloud_publisher", [6, 7, 8, 9])
+    )
+    force_cores = _list_to_affinity_string(
+        affinity.get("force_publisher", [6, 7, 8, 9])
     )
     camera_executable = os.path.join(
         get_package_prefix("digit_sdk"), "lib", "digit_sdk", "camera_shm"
@@ -156,12 +169,6 @@ def launch_setup(context, *_args, **_kwargs):
         # Unset capture_fps keeps each sensor's YAML framerate.
         if capture_fps:
             camera_cmd += ["--capture-fps", capture_fps]
-        if diagnostics_dir:
-            # Per-serial subdirectory so concurrent cameras never share files.
-            camera_cmd += [
-                "--diagnostics-dir",
-                os.path.join(diagnostics_dir, serial),
-            ]
         nodes.append(ExecuteProcess(
             cmd=camera_cmd,
             name=f"camera_{serial}",
@@ -199,6 +206,25 @@ def launch_setup(context, *_args, **_kwargs):
             ))
 
         config = _sensor_config(sensors_root, serial)
+        force_enabled = (
+            publish_force and (config.get("force") or {}).get("enable_force", False)
+        )
+        if force_enabled:
+            nodes.append(Node(
+                package="digit_sdk",
+                executable="force_publisher",
+                name=f"force_pub_{serial}",
+                output="screen",
+                parameters=[{
+                    "serial": serial,
+                    "sensors_root": sensors_root,
+                    "models_root": models_root,
+                    "model_device": model_device,
+                    "rate": force_rate,
+                    "shm_connect_timeout": shm_connect_timeout,
+                    "cpu_affinity": force_cores,
+                }],
+            ))
         surface_outputs = []
         if publish_depth:
             surface_outputs.append(("depth", True, False))
@@ -218,6 +244,11 @@ def launch_setup(context, *_args, **_kwargs):
                     ),
                     "publish_depth": enable_depth,
                     "publish_pointcloud": enable_pointcloud,
+                    "color_pointcloud_with_force": (
+                        enable_pointcloud
+                        and color_pointcloud_with_force
+                        and force_enabled
+                    ),
                     "shm_connect_timeout": shm_connect_timeout,
                     "ppmm": float(config.get("ppmm", 0.0)),
                     "point_sample_mm": point_sample_mm,
@@ -232,6 +263,14 @@ def generate_launch_description():
     source_path = os.path.abspath(os.path.join(launch_dir, "..", "..", "sensors"))
     installed_path = os.path.abspath(os.path.join(launch_dir, "..", "sensors"))
     default_root = source_path if os.path.exists(source_path) else installed_path
+    source_models = os.path.abspath(os.path.join(launch_dir, "..", "..", "models"))
+    installed_models = os.path.abspath(os.path.join(launch_dir, "..", "models"))
+    workspace_models = os.path.abspath(os.path.join(os.getcwd(), "models"))
+    default_models = (
+        source_models if os.path.isdir(source_models)
+        else installed_models if os.path.isdir(installed_models)
+        else workspace_models if os.path.isdir(workspace_models) else ""
+    )
     return LaunchDescription([
         DeclareLaunchArgument(
             "sensors_root",
@@ -247,7 +286,15 @@ def generate_launch_description():
             "model_device", default_value="cuda", description="cuda or cpu"
         ),
         DeclareLaunchArgument(
-            "rate", default_value="60.0", description="Capture/publish rate in Hz"
+            "models_root",
+            default_value=default_models,
+            description=(
+                "Force-model checkpoints; defaults to digit_sdk/models and may "
+                "be overridden"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "rate", default_value="30.0", description="Inference/publish rate in Hz"
         ),
         DeclareLaunchArgument(
             "publish_raw",
@@ -265,8 +312,25 @@ def generate_launch_description():
             description="Derive and publish per-sensor point clouds",
         ),
         DeclareLaunchArgument(
+            "publish_force",
+            default_value="false",
+            description=(
+                "Run force only for sensors with force.enable_force: true"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "color_pointcloud_with_force",
+            default_value="false",
+            description="Add latest force RGB as the point-cloud rgb field",
+        ),
+        DeclareLaunchArgument(
+            "force_rate",
+            default_value="30.0",
+            description="Force estimation rate in Hz",
+        ),
+        DeclareLaunchArgument(
             "depth_cutoff",
-            default_value="0.2",
+            default_value="0.1",
             description="Post-process depth cutoff in millimetres; 0 disables it",
         ),
         DeclareLaunchArgument(
@@ -281,17 +345,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "capture_fps",
-            default_value="",
-            description=(
-                "Optional camera capture FPS override; empty keeps per-sensor YAML"
-            ),
-        ),
-        DeclareLaunchArgument(
-            "diagnostics_dir",
-            default_value="",
-            description=(
-                "Optional recovery-window frame diagnostics output directory"
-            ),
+            default_value="30.0",
+            description="Camera capture FPS override; empty keeps per-sensor YAML",
         ),
         OpaqueFunction(function=launch_setup),
     ])

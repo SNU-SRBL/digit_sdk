@@ -71,11 +71,7 @@ modified.
 
 ## Collection
 
-All calibration capture runs at 30 Hz. Run commands from the repository root:
-
-```bash
-cd ~/ros2/digit_sdk
-```
+All calibration capture runs at 30 Hz. Run commands from the repository root.
 
 ### 1. Shared ball background
 
@@ -96,12 +92,10 @@ sample. The collector refuses to overwrite an existing reference.
 Collect the four ball diameters:
 
 ```bash
-for DIAMETER in 3 5 7 9; do
-  python3 -m calibration.collect_ball \
-    --serial D21242 \
-    --ball-diameter-mm "$DIAMETER" \
-    --display-difference
-done
+python3 -m calibration.collect_ball --serial D21242 --ball-diameter-mm 3 --display-difference
+python3 -m calibration.collect_ball --serial D21242 --ball-diameter-mm 5 --display-difference
+python3 -m calibration.collect_ball --serial D21242 --ball-diameter-mm 7 --display-difference
+python3 -m calibration.collect_ball --serial D21242 --ball-diameter-mm 9 --display-difference
 ```
 
 Controls:
@@ -131,6 +125,8 @@ python3 -m calibration.collect_ball \
 ```bash
 python3 -m calibration.collect_manual_contacts --serial D21242
 ```
+
+Collect 100 independent contacts: 60 training, 20 validation, and 20 test.
 
 Controls:
 
@@ -171,17 +167,19 @@ Masks are binary PNG files: `0` is non-contact and `255` is contact.
 Every save records the annotator, increments `annotation_revision`, and updates
 the mask geometry.
 
-## Finalization
+## Finalize calibration
 
 After all accepted ball samples and manual contacts are annotated:
 
 ```bash
 python3 -m calibration.finalize_dataset --serial D21242
+python3 -m calibration.promote_dataset --serial D21242
 ```
 
-The default review output is `sensors/<serial>/calibration_next`. The command
-copies checked data, writes the manifest and frozen splits, and runs strict
-schema validation. It never overwrites the active calibration root.
+`finalize_dataset` creates and validates `calibration_next`; it does not touch
+the active dataset. `promote_dataset` validates that candidate again, swaps it
+into `calibration/`, and preserves the immutable `inbox/`. A failed promotion
+rolls back automatically.
 
 Ball split policy per complete five-depth grid cell:
 
@@ -189,32 +187,22 @@ Ball split policy per complete five-depth grid cell:
 - one rotating depth: validation;
 - one rotating depth: test.
 
-Manual contacts are assigned deterministically by `split_group`. Defaults are
-20 validation contacts, 20 test contacts, and all remaining contacts for
-training. Change them when necessary:
+Manual contacts are assigned deterministically by `split_group`: groups are
+ranked by the SHA-256 hash of their `split_group`, the lowest ranks become
+test, the next become validation, and the rest train. The default split is
+60% train, 20% validation, and 20% test. Counts are derived from the group
+total with any remainder going to training, and every partition gets at least
+one group. Override the fractions when necessary:
 
 ```bash
 python3 -m calibration.finalize_dataset \
   --serial D21242 \
-  --manual-validation-count 20 \
-  --manual-test-count 20
+  --manual-validation-fraction 0.2 \
+  --manual-test-fraction 0.2
 ```
 
-Validate any canonical dataset with:
-
-```bash
-python3 -m calibration.validate_dataset \
-  sensors/D21242/calibration_next
-```
-
-Promote the validated candidate while preserving its inbox:
-
-```bash
-python3 -m calibration.promote_dataset --serial D21242
-```
-
-The active dataset is then `sensors/D21242/calibration`. Its inbox remains the
-immutable source for future review and relabeling.
+The separate `validate_dataset` command is only needed when investigating a
+failed finalization or promotion.
 
 ## Dataset contract
 
@@ -239,67 +227,28 @@ and `255`.
 
 ## Decoder training
 
-The frozen base is deliberately user-acquired. It is not version-controlled,
-and setup does not clone a model repository or use Git LFS. Training and
-evaluation resolve `dpt_real.p` from `suddhu/tactile_transformer` at pinned
-revision `b05cfe1df2c90d3d91f8378633173b26de5a2d2c` through
-`huggingface_hub`'s cache, then verify its size and SHA-256. Provide access to
-that artifact before training or evaluation; the current CLI has no
-repository-local manual placement path.
+Train each sensor independently after its calibration is active.
 
-Each physical DIGIT is fine-tuned separately. Sensor checkpoints contain only
-decoder/head weights and remain local, not version-controlled.
+The sole method is `mixed_background`: stage 1 uses ball metric depth; stage 2
+alternates ball depth, manual contact masks, and full-frame no-contact
+backgrounds. Background targets are zero depth and no contact.
 
-Finish collection, annotation, and finalization for all four sensors before
-starting decoder training.
+The default schedule uses 80 stage-1 epochs and 20 stage-2 epochs. It keeps
+the frozen encoder and fine-tunes the decoder with the standard three seeds.
 
-The sole training method is `mixed`: stage 1 learns metric depth from sphere
-contacts, then stage 2 alternates sphere-depth and manual contact-mask updates.
-Background records are held out for evaluation; they are not training
-negatives.
-
-For one sensor, a single invocation runs seeds 17, 29, and 43 in separate
-processes and selects the best eligible validation seed:
+Train one sensor:
 
 ```bash
 python3 -m calibration.train_decoder --serial D21242
 ```
 
-Completed runs matching the active dataset and frozen training protocol are
-reused. Partial or stale published runs are rejected. Seed selection is part
-of training; it is not method selection.
+This trains and selects one validation candidate, evaluates it once on the
+held-out test split, and prints both result sets. A rerun reuses the matching
+immutable test result. A passing decoder is written to `model/depth/`, and its
+maximum depth is recorded in the sensor YAML.
 
-The selected artifacts remain under the `mixed` directory:
-
-```text
-sensors/<serial>/model/tactile_transformer/mixed/
-├── seed_17/
-├── seed_29/
-├── seed_43/
-├── decoder.pth
-└── selection.json
-```
-
-Test partitions remain unopened until the global method and per-sensor seed
-choices are frozen. Production promotion remains a separate acceptance step.
-
-Open each frozen test split once:
-
-```bash
-python3 -m calibration.evaluate_decoder --serial D21242
-```
-
-The evaluator refuses to overwrite an existing `test.json`. After its test
-gates pass, promote the exact tested decoder:
-
-```bash
-python3 -m calibration.promote_decoder --serial D21242
-```
-
-Promotion is fixed to `mixed`, writes the depth limit to the sensor YAML, and
-refuses to replace an existing
-production model. Runtime artifacts are written locally to
-`sensors/D21242/model/depth/`; they are not version-controlled.
+Then check settled live no-contact output and light, medium, and deep ball
+contact.
 
 ## Depth units
 

@@ -87,15 +87,12 @@ def run(
     sensors_root: str,
     verbose: bool = False,
     capture_fps: float = None,
-    diagnostics_dir: str = "",
 ):
     """Run the main capture loop; writes frames to shared memory."""
     shm_name = f"tactile_{serial}"
 
     # Create camera first — SHM size depends on resolution
     camera = Camera(serial=serial, sensors_root=sensors_root, framerate=capture_fps)
-    if diagnostics_dir:
-        camera.enable_diagnostics(diagnostics_dir)
     connect_with_retry(camera, verbose=verbose)
 
     # Clean up stale shm if any
@@ -179,8 +176,6 @@ def main():
                         help='CPU core affinity (e.g. "0-3" or "0,2,4")')
     parser.add_argument('--capture-fps', type=float, default=None,
                         help='Override sensor YAML capture FPS (unset keeps YAML)')
-    parser.add_argument('--diagnostics-dir', type=str, default='',
-                        help='Enable bounded recovery-window frame diagnostics')
     args = parser.parse_args()
 
     if args.cpu_affinity:
@@ -190,8 +185,7 @@ def main():
 
     try:
         run(serial=args.serial, sensors_root=args.sensors_root,
-            verbose=args.verbose, capture_fps=args.capture_fps,
-            diagnostics_dir=args.diagnostics_dir)
+            verbose=args.verbose, capture_fps=args.capture_fps)
     except KeyboardInterrupt:
         return
     except Exception as e:

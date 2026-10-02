@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 import re
@@ -10,105 +9,9 @@ import numpy as np
 import pyudev
 
 from digit_sdk.utils import load_config
+from digit_sdk.v4l2_capture import V4L2Capture
 
-'''This module provides a Camera class for low latency image acquisition using OpenCV.
-It supports both DIGIT cameras and generic V4L2 cameras.
-'''
-
-DIAGNOSTIC_POST_FRAMES = 3
-
-
-class FrameDiagnostics:
-    """Opt-in, bounded recovery-window frame capture.
-
-    Writes timestamped ``.npy`` frames plus a JSONL index with per-frame
-    brightness statistics. Disabled when ``directory`` is falsy. Event count
-    and per-event frame count are capped so a long hardware run stays small.
-    """
-
-    MAX_EVENTS = 8
-    MAX_FRAMES_PER_EVENT = 20
-
-    def __init__(
-        self,
-        directory,
-        serial=None,
-        *,
-        max_events=MAX_EVENTS,
-        max_frames_per_event=MAX_FRAMES_PER_EVENT,
-    ):
-        self.directory = Path(directory) if directory else None
-        self.serial = serial
-        self.max_events = max_events
-        self.max_frames_per_event = max_frames_per_event
-        self.events = 0
-        self.current = None
-        self.index_path = None
-        if self.directory is not None:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            self.index_path = self.directory / "index.jsonl"
-
-    @property
-    def enabled(self):
-        return self.directory is not None
-
-    def start_event(self, label, reason=None):
-        """Open a new capture event; flushes any still-open event first."""
-        if not self.enabled:
-            return False
-        self.end_event()
-        if self.events >= self.max_events:
-            return False
-        self.events += 1
-        self.current = {
-            "event": self.events,
-            "label": label,
-            "reason": reason or label,
-            "serial": self.serial,
-            "started_ns": time.time_ns(),
-            "frames": [],
-        }
-        return True
-
-    def add_frame(self, tag, frame, timestamp_ns=None):
-        """Persist one frame with metadata; no-op without an open event."""
-        if not self.enabled or self.current is None:
-            return False
-        if len(self.current["frames"]) >= self.max_frames_per_event:
-            return False
-        frame = np.asarray(frame)
-        timestamp_ns = time.time_ns() if timestamp_ns is None else timestamp_ns
-        index = len(self.current["frames"])
-        name = (
-            f"{self.current['event']:03d}_{index:02d}_"
-            f"{timestamp_ns // 1_000_000}_{tag}.npy"
-        )
-        np.save(self.directory / name, frame)
-        self.current["frames"].append({
-            "file": name,
-            "tag": tag,
-            "timestamp_ns": timestamp_ns,
-            "shape": list(frame.shape),
-            "dtype": str(frame.dtype),
-            "brightness_mean": float(frame.mean()),
-            "brightness_min": int(frame.min()),
-            "brightness_max": int(frame.max()),
-        })
-        return True
-
-    def end_event(self, extra=None):
-        """Flush the open event to the JSONL index."""
-        if not self.enabled or self.current is None:
-            return False
-        record = dict(self.current)
-        record["ended_ns"] = time.time_ns()
-        if extra:
-            record.update(extra)
-        with open(self.index_path, "a") as stream:
-            stream.write(json.dumps(record) + "\n")
-        self.current = None
-        return True
-
+'''This module provides low-latency DIGIT and generic V4L2 image acquisition.'''
 
 class Camera:
     """The camera class (synchronous, based on digit-interface pattern)."""
@@ -176,14 +79,8 @@ class Camera:
         self._recovery_sleep = 0.01
         self._recovery_retry_sleep = 0.1
         self._recovery_started_at = None
-        self._recovery_started_ns = None
         self._recovery_reason = None
         self._recovery_failures = 0
-
-        # ── Opt-in recovery-window diagnostics (disabled by default) ──
-        self._diag = None
-        self._diag_last_good = None
-        self._diag_post_remaining = 0
 
         # ── FPS Watchdog (gap-based, derived from configured framerate) ──
         self._wd_dt = (1.0 / self.framerate) * 1.5  # 25ms@60Hz, 50ms@30Hz
@@ -194,7 +91,7 @@ class Camera:
     @staticmethod
     def _is_corrupt(bgr: np.ndarray, threshold: float = 3.0) -> bool:
         """
-        Detect STM32 DMA tear: per-column step-discontinuity detector.
+        Detect a row discontinuity: per-column step-discontinuity detector.
 
         A tear is a horizontal line where pixel values jump instantaneously
         (no gradient). Each column independently scans all 239 row-pairs for
@@ -238,7 +135,7 @@ class Camera:
         return (prev_flat + next_flat) / 2.0 > 0.80
 
     def connect(self, verbose=True):
-        """Connect to the camera using OpenCV VideoCapture (digit-interface pattern)."""
+        """Connect a DIGIT through its native V4L2 MMAP queue."""
         if self.device_type and self.device_type.upper() == "DIGIT" and self.serial:
             stable = Path(
                 f"/dev/v4l/by-id/"
@@ -255,24 +152,37 @@ class Camera:
                     )
                 self.device = digit_info["dev_name"]
                 self.dev_id = int(re.search(r"\d+$", self.device).group(0))
-        self.cap = cv2.VideoCapture(self.device)  # path string, survives index shifts
-        if not self.cap.isOpened():
-            self.cap.release()
-            raise RuntimeError(f"Could not open camera {self.device}")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_imgw)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_imgh)
-        self.cap.set(cv2.CAP_PROP_FPS, self.framerate)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+        if self.device_type and self.device_type.upper() == "DIGIT":
+            try:
+                phase_timings = {}
+                started = time.monotonic()
+                self.cap = V4L2Capture(
+                    self.device, self.raw_imgw, self.raw_imgh, self.framerate,
+                    phase_timings=phase_timings,
+                )
+                phase_timings["open_configure_s"] = time.monotonic() - started
+            except OSError as error:
+                raise RuntimeError(f"Could not open camera {self.device}") from error
+        else:
+            self.cap = cv2.VideoCapture(self.device)
+            if not self.cap.isOpened():
+                self.cap.release()
+                raise RuntimeError(f"Could not open camera {self.device}")
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_imgw)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_imgh)
+            self.cap.set(cv2.CAP_PROP_FPS, self.framerate)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+        warmup_started = time.monotonic()
         for _ in range(10):
-            ret, warmup = self.cap.read()
+            ret, _ = self.cap.read()
             if not ret:
                 self.cap.release()
                 raise RuntimeError(
                     f"camera warm-up failed for {self.serial or self.device}"
                 )
-            diag = getattr(self, "_diag", None)
-            if diag is not None and diag.enabled:
-                diag.add_frame("connect_discard", warmup)
+        if self.device_type and self.device_type.upper() == "DIGIT":
+            phase_timings["warmup_10_s"] = time.monotonic() - warmup_started
+            self._last_connect_timings = phase_timings
         if verbose:
             print("Camera ready for use!")
 
@@ -285,7 +195,6 @@ class Camera:
         """
         ret, frame = self.cap.read()
         if not ret:
-            self._begin_diagnostic_event("read_failed")
             self._recover("read_failed")
             self._wd_slow_count = 0
             self._wd_last_time = 0.0
@@ -295,7 +204,6 @@ class Camera:
 
         # ── Corruption detection + immediate recovery ──
         if self._is_corrupt(frame_copied):
-            self._begin_diagnostic_event("corrupt_frame", corrupt=frame_copied)
             self._recover("corrupt_frame")
             self._wd_slow_count = 0
             self._wd_last_time = now
@@ -315,62 +223,17 @@ class Camera:
                 self._wd_slow_count = max(0, self._wd_slow_count - 1)
         self._wd_last_time = now
 
-        diag = getattr(self, "_diag", None)
-        if diag is not None and diag.enabled:
-            self._diag_last_good = frame_copied
-            if getattr(self, "_diag_post_remaining", 0) > 0:
-                diag.add_frame("post_reconnect", frame_copied)
-                self._diag_post_remaining -= 1
-                if self._diag_post_remaining <= 0:
-                    diag.end_event()
-
         return frame_copied
-
-    def enable_diagnostics(
-        self,
-        directory,
-        *,
-        max_events=FrameDiagnostics.MAX_EVENTS,
-        max_frames_per_event=FrameDiagnostics.MAX_FRAMES_PER_EVENT,
-    ):
-        """Opt in to bounded recovery-window diagnostics for this camera."""
-        self._diag = FrameDiagnostics(
-            directory,
-            serial=self.serial,
-            max_events=max_events,
-            max_frames_per_event=max_frames_per_event,
-        )
-        self._diag_last_good = None
-        self._diag_post_remaining = 0
-        return self._diag
-
-    def _begin_diagnostic_event(self, reason, corrupt=None):
-        """Capture the pre-trigger and corrupt frames of a recovery window."""
-        diag = getattr(self, "_diag", None)
-        if diag is None or not diag.enabled:
-            return
-        if not diag.start_event(reason, reason=reason):
-            return
-        pre_trigger = getattr(self, "_diag_last_good", None)
-        if pre_trigger is not None:
-            diag.add_frame("pre_trigger", pre_trigger)
-        if corrupt is not None:
-            diag.add_frame("corrupt_candidate", corrupt)
-        self._diag_post_remaining = DIAGNOSTIC_POST_FRAMES
 
     def _recover(self, reason="unspecified"):
         """
         STREAMOFF/STREAMON cycle via release()+connect().
 
-        Resets STM32 DMA state. connect() discards startup frames.
+        Resets the camera stream. connect() discards startup frames.
         """
         if self._recovery_started_at is None:
             self._recovery_started_at = time.monotonic()
             self._recovery_reason = reason
-            if self._diagnostics_enabled():
-                # Wall clock only in diagnostics mode; monotonic elapsed is
-                # enough for normal operation.
-                self._recovery_started_ns = time.time_ns()
         self.release()
         time.sleep(self._recovery_sleep)
         try:
@@ -385,22 +248,11 @@ class Camera:
             f"reason={self._recovery_reason} elapsed={elapsed:.3f}s "
             f"failed_attempts={self._recovery_failures}"
         )
-        if self._diagnostics_enabled():
-            # Logged for every recovery, including ones past the image cap.
-            message += (
-                f" started_ns={self._recovery_started_ns}"
-                f" completed_ns={time.time_ns()}"
-            )
         print(message, flush=True)
         self._recovery_started_at = None
-        self._recovery_started_ns = None
         self._recovery_reason = None
         self._recovery_failures = 0
         return True
-
-    def _diagnostics_enabled(self):
-        diag = getattr(self, "_diag", None)
-        return diag is not None and diag.enabled
 
     def release(self):
         """Release camera resources."""

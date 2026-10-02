@@ -56,16 +56,34 @@ def _registered_shared_artifacts(sensors_root, name: str) -> list[Path]:
     return sorted(Path(sensors_root).glob(f"*/model/depth/{name}"))
 
 
-def _artifacts_present(sensors_root, serials: Sequence[str], kind: str) -> bool:
+def _artifacts_present(
+    sensors_root,
+    serials: Sequence[str],
+    kind: str,
+    *,
+    require_current_decoder: bool = False,
+) -> bool:
     """True when every serial has a decoder artifact and a shared encoder exists."""
     shared_name = _SHARED_TRT_NAME if kind == "engine" else _SHARED_ONNX_NAME
     decoder_name = _DECODER_TRT_NAME if kind == "engine" else _DECODER_ONNX_NAME
     root = Path(sensors_root)
     shared = bool(_registered_shared_artifacts(root, shared_name))
-    decoders = all(
-        (root / serial / "model" / "depth" / decoder_name.format(serial=serial)).is_file()
-        for serial in serials
-    )
+    decoders = True
+    for serial in serials:
+        model_root = root / serial / "model" / "depth"
+        artifact = model_root / decoder_name.format(serial=serial)
+        if not artifact.is_file():
+            decoders = False
+            break
+        if require_current_decoder:
+            production_decoder = model_root / "decoder.pth"
+            if (
+                not production_decoder.is_file()
+                or artifact.stat().st_mtime_ns
+                < production_decoder.stat().st_mtime_ns
+            ):
+                decoders = False
+                break
     return shared and decoders
 
 
@@ -83,9 +101,13 @@ def _find_shared_artifact(sensors_root, name: str) -> Path:
 def _resolve_backend(backend: str, sensors_root, serials: Sequence[str]) -> str:
     """Resolve the requested backend name, applying auto selection."""
     if backend == "auto":
-        if _artifacts_present(sensors_root, serials, "engine"):
+        if _artifacts_present(
+            sensors_root, serials, "engine", require_current_decoder=True
+        ):
             return "trt_fp16"
-        if _artifacts_present(sensors_root, serials, "onnx"):
+        if _artifacts_present(
+            sensors_root, serials, "onnx", require_current_decoder=True
+        ):
             return "onnx"
         return "torch"
     if backend not in ("trt_fp16", "onnx", "torch"):

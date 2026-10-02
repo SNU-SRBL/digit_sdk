@@ -48,8 +48,8 @@ class PipelineNode(Node):
         self.declare_parameter("sensors_root", "../sensors")
         self.declare_parameter("model_device", "cuda")
         self.declare_parameter("depth_backend", "auto")
-        self.declare_parameter("depth_cutoff", 0.2)
-        self.declare_parameter("rate", 60.0)
+        self.declare_parameter("depth_cutoff", 0.1)
+        self.declare_parameter("rate", 30.0)
         self.declare_parameter("cpu_affinity", "")
 
         affinity = self.get_parameter("cpu_affinity").value

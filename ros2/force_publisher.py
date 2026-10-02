@@ -1,184 +1,219 @@
 #!/usr/bin/env python3
-"""
-Force publisher: reads SHM tactile_{serial}_force, publishes force DDS.
-
-One process per sensor — independent GIL.  Reads force_field (normal+shear)
-and force_vector from shared memory written by pipeline_node.
-
-Topics:
-  /tactile/{serial}/force_field      — sensor_msgs/Image (32FC3)
-  /tactile/{serial}/force_field_viz  — sensor_msgs/Image (rgb8)
-  /tactile/{serial}/force_vector     — geometry_msgs/WrenchStamped
-"""
+"""Estimate force from camera SHM and publish it over DDS."""
 
 import os
-import struct
 import sys
 import time
 
-import rclpy
-from rclpy.node import Node
-from rclpy.executors import SingleThreadedExecutor
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
-from geometry_msgs.msg import WrenchStamped
+import cv2
 import numpy as np
+import rclpy
+from geometry_msgs.msg import WrenchStamped
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Image
 
-from digit_sdk.viz_utils import force_field_to_rgb
+from digit_sdk.force_estimator import ForceEstimator
 from digit_sdk.publisher_shm import (
     ShmConnectError,
     connect_shm_with_retry,
     reopen_shm_if_stale,
 )
+from digit_sdk.shm_protocol import read_camera_frame
+from digit_sdk.utils import load_config
+from digit_sdk.viz_utils import force_field_to_rgb
+
 
 _BE_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
 )
+_FORCE_MODEL_FILES = {
+    "sparsh-dino-base": "sparsh_dino_base_encoder.ckpt",
+    "sparsh-digit-forcefield": "sparsh_digit_forcefield_decoder.pth",
+}
 
-SHM_HEADER = 40
+
+def _parse_affinity(value):
+    cores = set()
+    for part in value.split(","):
+        if not part:
+            continue
+        start, *end = part.split("-", 1)
+        cores.update(range(int(start), int(end[0]) + 1) if end else [int(start)])
+    return cores
+
+
+def _force_model_paths(config, models_root):
+    force = (config or {}).get("force") or {}
+    try:
+        encoder = _FORCE_MODEL_FILES[force.get("encoder", "sparsh-dino-base")]
+        decoder = _FORCE_MODEL_FILES[
+            force.get("decoder", "sparsh-digit-forcefield")
+        ]
+    except KeyError as error:
+        raise ValueError(f"unsupported force model {error.args[0]!r}") from error
+    return os.path.join(models_root, encoder), os.path.join(models_root, decoder)
 
 
 class ForcePublisher(Node):
-    """Reads force SHM, publishes force_field + force_vector over DDS."""
+    """One force estimator per enabled sensor."""
 
     def __init__(self):
-        super().__init__('force_publisher')
+        super().__init__("force_publisher")
+        self.declare_parameter("serial", "")
+        self.declare_parameter("sensors_root", "")
+        self.declare_parameter("models_root", "")
+        self.declare_parameter("model_device", "cuda")
+        self.declare_parameter("rate", 30.0)
+        self.declare_parameter("liveness_timeout", 2.0)
+        self.declare_parameter("shm_connect_timeout", 30.0)
+        self.declare_parameter("cpu_affinity", "")
 
-        self.declare_parameter('serial', value='')
-        self.declare_parameter('rate', 30.0)
-        self.declare_parameter('liveness_timeout', 2.0)
-        self.declare_parameter('cpu_affinity', '')
-
-        serial = self.get_parameter('serial').value
-        rate = self.get_parameter('rate').value
+        self._serial = self.get_parameter("serial").value
+        sensors_root = self.get_parameter("sensors_root").value
+        models_root = self.get_parameter("models_root").value
+        device = self.get_parameter("model_device").value
+        rate = float(self.get_parameter("rate").value)
         self._liveness_timeout = float(
-            self.get_parameter('liveness_timeout').value
+            self.get_parameter("liveness_timeout").value
         )
-        cpu_affinity = self.get_parameter('cpu_affinity').value
+        connect_timeout = float(
+            self.get_parameter("shm_connect_timeout").value
+        )
+        affinity = self.get_parameter("cpu_affinity").value
 
-        if cpu_affinity:
-            cores = set()
-            for part in cpu_affinity.split(','):
-                part = part.strip()
-                if '-' in part:
-                    lo, hi = part.split('-', 1)
-                    cores.update(range(int(lo), int(hi) + 1))
-                else:
-                    cores.add(int(part))
-            if cores:
-                os.sched_setaffinity(0, cores)
+        if not self._serial or not sensors_root or not models_root:
+            raise ValueError("serial, sensors_root, and models_root are required")
+        if affinity:
+            os.sched_setaffinity(0, _parse_affinity(affinity))
 
-        if not serial:
-            self.get_logger().error('No serial parameter — nothing to do')
-            return
+        config = load_config(serial=self._serial, sensors_root=sensors_root)
+        force = config.get("force") or {}
+        if not force.get("enable_force", False):
+            raise ValueError(f"force is disabled for {self._serial}")
 
-        self._serial = serial
+        encoder_path, decoder_path = _force_model_paths(config, models_root)
+        missing = [
+            path for path in (encoder_path, decoder_path) if not os.path.isfile(path)
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "force model files not found; set models_root to the downloaded "
+                f"checkpoint directory: {', '.join(missing)}"
+            )
+
+        # Attach first: a disabled/missing camera cannot allocate the force model.
+        self._shm_name = f"tactile_{self._serial}"
+        self._shm = connect_shm_with_retry(
+            self._shm_name, timeout_s=connect_timeout
+        )
+        self._last_sequence = None
         self._last_fresh = time.monotonic()
-        self._shm = connect_shm_with_retry(f'tactile_{serial}_force')
 
-        # Publishers
+        background_path = os.path.join(
+            sensors_root,
+            self._serial,
+            "calibration",
+            "background",
+            "reference.png",
+        )
+        background = cv2.imread(background_path, cv2.IMREAD_COLOR)
+        if background is None:
+            raise FileNotFoundError(
+                f"force background not found or unreadable: {background_path}"
+            )
+        self._estimator = ForceEstimator(
+            encoder_path,
+            decoder_path,
+            temporal_stride=int(force.get("temporal_stride", 5)),
+            bg_offset=float(force.get("bg_offset", 0.5)),
+            device=device,
+            force_vector_scale=force.get("force_vector_scale"),
+        )
+        self._estimator.load_background(background)
+
         self._pub_field = self.create_publisher(
-            Image, f'tactile/{serial}/force_field', _BE_QOS)
+            Image, f"tactile/{self._serial}/force_field", _BE_QOS
+        )
         self._pub_field_viz = self.create_publisher(
-            Image, f'tactile/{serial}/force_field_viz', _BE_QOS)
+            Image, f"tactile/{self._serial}/force_field_rgb", _BE_QOS
+        )
         self._pub_vector = self.create_publisher(
-            WrenchStamped, f'tactile/{serial}/force_vector', _BE_QOS)
-
+            WrenchStamped, f"tactile/{self._serial}/force_vector", _BE_QOS
+        )
         self._timer = self.create_timer(1.0 / rate, self._handle_sensor)
-
         self.get_logger().info(
-            f'Force publisher ready for {serial} @ {rate:.0f}Hz')
+            f"Force publisher ready for {self._serial} @ {rate:.0f}Hz"
+        )
 
     def _handle_sensor(self):
-        """Read latest force data from SHM, publish."""
-        if self._shm is None:
-            return
-        buf = self._shm.buf
-
-        if not buf[36]:
+        frame = read_camera_frame(self._shm.buf)
+        if frame is None or frame.sequence == self._last_sequence:
             if time.monotonic() - self._last_fresh > self._liveness_timeout:
                 self._recover_shm()
             return
-        self._last_fresh = time.monotonic()
 
-        h, w = struct.unpack_from('<II', buf, 16)
-        fx, fy, fz = struct.unpack_from('<fff', buf, 24)
-        if h == 0 or w == 0:
+        self._last_sequence = frame.sequence
+        self._last_fresh = time.monotonic()
+        result = self._estimator.estimate(frame.image, frame.timestamp_ns / 1e9)
+        if result is None:
             return
 
-        offset = SHM_HEADER  # 40
-        normal = np.frombuffer(buf[offset:offset + h * w * 4],
-                               dtype=np.float32).reshape(h, w)
-        offset += h * w * 4
-        shear_x = np.frombuffer(buf[offset:offset + h * w * 4],
-                                dtype=np.float32).reshape(h, w)
-        offset += h * w * 4
-        shear_y = np.frombuffer(buf[offset:offset + h * w * 4],
-                                dtype=np.float32).reshape(h, w)
-
+        field = result["force_field"]
+        normal, shear = field["normal"], field["shear"]
+        height, width = normal.shape
         header = self.get_clock().now().to_msg()
-        frame = f'tactile_{self._serial}_depth_frame'
+        frame_id = f"tactile_{self._serial}_depth_frame"
 
-        # Force field: pack normal+shear into 32FC3
-        force_rgb = np.zeros((h, w, 3), dtype=np.float32)
-        force_rgb[:, :, 0] = shear_x
-        force_rgb[:, :, 1] = shear_y
-        force_rgb[:, :, 2] = normal
-        field_msg = Image()
-        field_msg.height = h
-        field_msg.width = w
-        field_msg.encoding = '32FC3'
-        field_msg.is_bigendian = False
-        field_msg.step = w * 4 * 3
-        field_msg.data = np.ascontiguousarray(force_rgb).tobytes()
-        field_msg.header.frame_id = frame
-        field_msg.header.stamp = header
-        self._pub_field.publish(field_msg)
+        field_data = np.dstack((shear[:, :, 0], shear[:, :, 1], normal))
+        message = Image()
+        message.height, message.width = height, width
+        message.encoding = "32FC3"
+        message.step = width * 12
+        message.data = np.ascontiguousarray(field_data, dtype=np.float32).tobytes()
+        message.header.frame_id, message.header.stamp = frame_id, header
+        self._pub_field.publish(message)
 
-        # Force field viz: force_field_to_rgb
-        viz_msg = Image()
-        viz_msg.height = h
-        viz_msg.width = w
-        viz_msg.encoding = 'rgb8'
-        viz_msg.is_bigendian = False
-        viz_msg.step = w * 3
-        viz_msg.data = np.ascontiguousarray(
-            force_field_to_rgb(normal, np.stack([shear_x, shear_y], axis=-1))).tobytes()
-        viz_msg.header.frame_id = frame
-        viz_msg.header.stamp = header
-        self._pub_field_viz.publish(viz_msg)
+        viz = Image()
+        viz.height, viz.width = height, width
+        viz.encoding = "rgb8"
+        viz.step = width * 3
+        viz.data = np.ascontiguousarray(
+            force_field_to_rgb(normal, shear)
+        ).tobytes()
+        viz.header.frame_id, viz.header.stamp = frame_id, header
+        self._pub_field_viz.publish(viz)
 
-        # Force vector
-        vec_msg = WrenchStamped()
-        vec_msg.header.frame_id = frame
-        vec_msg.header.stamp = header
-        vec_msg.wrench.force.x = float(fx)
-        vec_msg.wrench.force.y = float(fy)
-        vec_msg.wrench.force.z = float(fz)
-        self._pub_vector.publish(vec_msg)
+        vector = result["force_vector_physical"]
+        wrench = WrenchStamped()
+        wrench.header.frame_id, wrench.header.stamp = frame_id, header
+        wrench.wrench.force.x = vector["fx"]
+        wrench.wrench.force.y = vector["fy"]
+        wrench.wrench.force.z = vector["fz"]
+        self._pub_vector.publish(wrench)
 
     def _recover_shm(self):
-        name = f'tactile_{self._serial}_force'
         fresh = reopen_shm_if_stale(
-            name, self._shm, liveness_timeout_s=self._liveness_timeout
+            self._shm_name, self._shm, self._liveness_timeout
         )
         if fresh is None:
             try:
                 fresh = connect_shm_with_retry(
-                    name, timeout_s=self._liveness_timeout
+                    self._shm_name, timeout_s=self._liveness_timeout
                 )
-            except ShmConnectError as exc:
-                self.get_logger().fatal(str(exc))
-                sys.exit(1)
+            except ShmConnectError as error:
+                self.get_logger().error(str(error))
+                return
         self._shm = fresh
+        self._last_sequence = None
         self._last_fresh = time.monotonic()
-        self.get_logger().warn(f'Reattached force SHM {name}')
+        self.get_logger().warning(f"Reattached camera SHM {self._shm_name}")
 
     def destroy_node(self):
-        if self._shm is not None:
-            self._shm.close()
+        self._shm.close()
         super().destroy_node()
 
 
@@ -186,9 +221,10 @@ def main(args=None):
     rclpy.init(args=args)
     try:
         node = ForcePublisher()
-    except ShmConnectError as exc:
-        print(f'FATAL: {exc}', file=sys.stderr, flush=True)
-        sys.exit(1)
+    except (FileNotFoundError, RuntimeError, ShmConnectError, ValueError) as error:
+        print(f"FATAL: {error}", file=sys.stderr, flush=True)
+        rclpy.shutdown()
+        raise SystemExit(1) from error
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
@@ -202,5 +238,5 @@ def main(args=None):
             rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

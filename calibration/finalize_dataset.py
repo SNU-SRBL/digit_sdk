@@ -45,15 +45,30 @@ def _split_groups(records: Iterable[Mapping[str, Any]]) -> List[str]:
 
 
 def manual_partitions(
-    rows: List[Mapping[str, Any]], validation_count: int, test_count: int
+    rows: List[Mapping[str, Any]],
+    validation_fraction: float = 0.2,
+    test_fraction: float = 0.2,
 ) -> Dict[str, str]:
-    """Assign independent contacts deterministically at finalization."""
-    if validation_count < 1 or test_count < 1:
-        raise ValueError("manual validation and test counts must be positive")
-    groups = sorted({row["split_group"] for row in rows})
-    if len(groups) <= validation_count + test_count:
+    """Assign independent contacts deterministically at finalization.
+
+    Groups are ranked by the SHA-256 hash of their split_group. The lowest
+    ranks become test, the next validation, and the rest train. Counts come
+    from the fractions, with any remainder going to training; every partition
+    is guaranteed at least one group.
+    """
+    if not 0.0 < validation_fraction < 1.0 or not 0.0 < test_fraction < 1.0:
+        raise ValueError("manual split fractions must be between 0 and 1")
+    if validation_fraction + test_fraction >= 1.0:
         raise ValueError(
-            "manual contact groups must exceed validation_count + test_count"
+            "manual validation and test fractions must sum to less than 1"
+        )
+    groups = sorted({row["split_group"] for row in rows})
+    total = len(groups)
+    test_count = max(1, round(total * test_fraction))
+    validation_count = max(1, round(total * validation_fraction))
+    if test_count + validation_count >= total:
+        raise ValueError(
+            "manual contact groups must exceed validation and test counts"
         )
     ranked = sorted(
         groups,
@@ -135,8 +150,8 @@ def finalize_dataset(
     serial: str,
     output_root: Path,
     *,
-    manual_validation_count: int = 20,
-    manual_test_count: int = 20,
+    manual_validation_fraction: float = 0.2,
+    manual_test_fraction: float = 0.2,
     background_validation_count: int = 10,
     background_test_count: int = 10,
 ) -> Dict[str, int]:
@@ -192,7 +207,7 @@ def finalize_dataset(
         raise ValueError("background reference does not match sensor")
 
     manual_assignment = manual_partitions(
-        touches, manual_validation_count, manual_test_count
+        touches, manual_validation_fraction, manual_test_fraction
     )
     ball_assignment = {
         row["sample_id"]: ball_partition(row) for row in ball_rows
@@ -373,8 +388,8 @@ def main(argv=None) -> int:
     parser.add_argument("--serial", required=True)
     parser.add_argument("--sensors-root", type=Path, default=Path("sensors"))
     parser.add_argument("--output-root", type=Path)
-    parser.add_argument("--manual-validation-count", type=int, default=20)
-    parser.add_argument("--manual-test-count", type=int, default=20)
+    parser.add_argument("--manual-validation-fraction", type=float, default=0.2)
+    parser.add_argument("--manual-test-fraction", type=float, default=0.2)
     parser.add_argument("--background-validation-count", type=int, default=10)
     parser.add_argument("--background-test-count", type=int, default=10)
     args = parser.parse_args(argv)
@@ -385,8 +400,8 @@ def main(argv=None) -> int:
         args.sensors_root,
         args.serial,
         output_root,
-        manual_validation_count=args.manual_validation_count,
-        manual_test_count=args.manual_test_count,
+        manual_validation_fraction=args.manual_validation_fraction,
+        manual_test_fraction=args.manual_test_fraction,
         background_validation_count=args.background_validation_count,
         background_test_count=args.background_test_count,
     )

@@ -6,6 +6,7 @@ import os
 import sys
 import time
 
+import cv2
 import numpy as np
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -49,6 +50,7 @@ class SurfacePublisher(Node):
         self.declare_parameter("cpu_affinity", "")
         self.declare_parameter("publish_depth", True)
         self.declare_parameter("publish_pointcloud", False)
+        self.declare_parameter("color_pointcloud_with_force", False)
         self.declare_parameter("shm_connect_timeout", 10.0)
         self.declare_parameter("ppmm", 0.0)
         self.declare_parameter("point_sample_mm", 0.2)
@@ -62,6 +64,9 @@ class SurfacePublisher(Node):
         self._publish_depth = bool(self.get_parameter("publish_depth").value)
         self._publish_pointcloud = bool(
             self.get_parameter("publish_pointcloud").value
+        )
+        self._color_pointcloud_with_force = bool(
+            self.get_parameter("color_pointcloud_with_force").value
         )
         self._ppmm = float(self.get_parameter("ppmm").value)
         self._point_sample_mm = float(
@@ -85,6 +90,7 @@ class SurfacePublisher(Node):
         self._last_depth_seq = -1
         self._last_pointcloud_seq = -1
         self._last_fresh = time.monotonic()
+        self._force_rgb = None
         self._shm = connect_shm_with_retry(
             f"tactile_{serial}_surface",
             timeout_s=self._shm_connect_timeout,
@@ -99,6 +105,15 @@ class SurfacePublisher(Node):
                 PointCloud2, f"tactile/{serial}/pointcloud", _BE_QOS
             )
             if self._publish_pointcloud else None
+        )
+        self._force_sub = (
+            self.create_subscription(
+                Image,
+                f"tactile/{serial}/force_field_rgb",
+                self._receive_force_rgb,
+                _BE_QOS,
+            )
+            if self._color_pointcloud_with_force else None
         )
         self._timers = []
         poll_period = 1.0 / (rate * poll_oversample)
@@ -182,6 +197,9 @@ class SurfacePublisher(Node):
         points = depth_to_pointcloud(
             snapshot.depth, self._ppmm, self._point_sample_mm
         )
+        colors = self._point_colors(snapshot.depth)
+        if self._color_pointcloud_with_force and colors is None:
+            return
         message = PointCloud2()
         message.header.frame_id = f"tactile_{self._serial}_depth_frame"
         _set_stamp(message.header.stamp, snapshot.timestamp_ns)
@@ -198,16 +216,64 @@ class SurfacePublisher(Node):
                 name="z", offset=8, datatype=PointField.FLOAT32, count=1
             ),
         ]
+        if colors is not None:
+            message.fields.append(
+                PointField(
+                    name="rgb", offset=12, datatype=PointField.FLOAT32, count=1
+                )
+            )
         message.is_bigendian = False
-        message.point_step = 12
-        message.row_step = 12 * len(points)
+        message.point_step = 16 if colors is not None else 12
+        message.row_step = message.point_step * len(points)
         message.is_dense = True
-        message.data = array.array("B", points.tobytes())
+        if colors is None:
+            message.data = array.array("B", points.tobytes())
+        else:
+            point_data = np.empty((len(points), 4), dtype=np.float32)
+            point_data[:, :3] = points
+            rgb = (
+                (colors[:, 0].astype(np.uint32) << 16)
+                | (colors[:, 1].astype(np.uint32) << 8)
+                | colors[:, 2].astype(np.uint32)
+            )
+            point_data[:, 3] = rgb.view(np.float32)
+            message.data = array.array("B", point_data.tobytes())
         try:
             self._pub_pc.publish(message)
         except RCLError:
             if rclpy.ok():
                 raise
+
+    def _receive_force_rgb(self, message):
+        if (
+            message.encoding != "rgb8"
+            or message.width <= 0
+            or message.height <= 0
+            or message.step != message.width * 3
+        ):
+            self.get_logger().warning("Ignoring malformed force_field_rgb image")
+            return
+        expected = message.height * message.step
+        if len(message.data) != expected:
+            self.get_logger().warning("Ignoring truncated force_field_rgb image")
+            return
+        self._force_rgb = np.frombuffer(
+            message.data, dtype=np.uint8
+        ).copy().reshape(message.height, message.width, 3)
+
+    def _point_colors(self, depth_mm):
+        if self._force_rgb is None:
+            return None
+        height, width = depth_mm.shape
+        colors = cv2.resize(
+            self._force_rgb, (width, height), interpolation=cv2.INTER_LINEAR
+        )
+        stride = (
+            max(1, int(self._point_sample_mm * self._ppmm))
+            if self._point_sample_mm > 0 else 1
+        )
+        sampled_depth = depth_mm[::stride, ::stride]
+        return colors[::stride, ::stride][sampled_depth > 0]
 
     def _recover_shm(self):
         name = f"tactile_{self._serial}_surface"

@@ -115,7 +115,6 @@ def download_model(
             repo_id=repo_id,
             filename=filename,
             cache_dir=None,  # Use default cache
-            resume_download=True,  # Resume if interrupted
         )
 
         # Copy to models directory

@@ -1,9 +1,9 @@
-"""Evaluate one frozen decoder once on its held-out test split."""
+"""Evaluate a selected decoder once on its held-out test split."""
 
 from __future__ import annotations
 
-import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +29,7 @@ from calibration.tactile_transformer.train import (
     METHOD,
     _load_decoder,
     evaluate_ball,
+    evaluate_background,
     evaluate_manual,
 )
 
@@ -79,6 +80,86 @@ def _verify_selection(
     return decoder
 
 
+def _mark_selection_tested(
+    selection_path: Path,
+    selection: dict,
+    model_root: Path,
+    test_path: Path,
+) -> None:
+    selection["test_evaluated"] = True
+    selection["test_result"] = test_path.relative_to(model_root).as_posix()
+    temporary = selection_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, selection_path)
+
+
+def _is_eligible(ball: dict, manual: dict, background: dict) -> bool:
+    return (
+        manual["missed_contacts"] == 0
+        and ball["contact_mae_mm"] <= 0.15
+        and background["max_depth_mm"] < 0.1
+    )
+
+
+def _decoder_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _test_identity(selection: dict, model_root: Path) -> dict:
+    selected = selection["selected"]
+    decoder = model_root / selected["decoder"]
+    if not decoder.is_file():
+        raise FileNotFoundError(decoder)
+    return {
+        "serial": selection["serial"],
+        "method": selection["method"],
+        "dataset_id": selection["dataset_id"],
+        "selected_seed": int(selected["seed"]),
+        "selected_decoder": selected["decoder"],
+        "decoder_sha256": _decoder_sha256(decoder),
+        "ball_split_id": selection["ball_split_id"],
+        "manual_mask_split_id": selection["manual_mask_split_id"],
+        "maximum_depth_mm": float(selection["maximum_depth_mm"]),
+        "contact_threshold_mm": float(selection["contact_threshold_mm"]),
+    }
+
+
+def evaluate_or_load(
+    serial: str,
+    sensors_root: Path,
+    device: torch.device,
+    batch_size: int,
+    workers: int,
+    base_cache_dir: Path | None,
+) -> dict:
+    model_root = sensors_root / serial / "model" / "tactile_transformer"
+    method_root = model_root / METHOD
+    selection_path = method_root / "selection.json"
+    test_path = method_root / "test.json"
+    if not test_path.is_file():
+        return evaluate(
+            serial=serial,
+            sensors_root=sensors_root,
+            device=device,
+            batch_size=batch_size,
+            workers=workers,
+            base_cache_dir=base_cache_dir,
+        )
+
+    selection = json.loads(selection_path.read_text())
+    result = json.loads(test_path.read_text())
+    expected = _test_identity(selection, model_root)
+    if any(result.get(key) != value for key, value in expected.items()):
+        raise RuntimeError("existing test result does not match selected decoder")
+    if not selection.get("test_evaluated"):
+        _mark_selection_tested(selection_path, selection, model_root, test_path)
+    return result
+
+
 def evaluate(
     serial: str,
     sensors_root: Path,
@@ -121,6 +202,10 @@ def evaluate(
         ]),
         **common,
     )
+    background_loader = DataLoader(
+        BackgroundSupportDataset(dataset_root, "test"),
+        **common,
+    )
     evaluation_args = SimpleNamespace(
         device=device,
         maximum_depth_mm=float(selection["maximum_depth_mm"]),
@@ -128,65 +213,18 @@ def evaluate(
     )
     ball = evaluate_ball(model, ball_loader, evaluation_args)
     manual = evaluate_manual(model, manual_loader, evaluation_args)
-    eligible = manual["missed_contacts"] == 0 and ball["contact_mae_mm"] <= 0.15
+    background = evaluate_background(model, background_loader, evaluation_args)
+    eligible = _is_eligible(ball, manual, background)
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "evaluated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "serial": serial,
-        "method": METHOD,
-        "selected_seed": int(selection["selected"]["seed"]),
-        "dataset_id": summary.dataset_id,
-        "ball_split_id": selection["ball_split_id"],
-        "manual_mask_split_id": selection["manual_mask_split_id"],
-        "contact_threshold_mm": float(selection["contact_threshold_mm"]),
+        **_test_identity(selection, model_root),
         "ball": ball,
         "manual": manual,
+        "background": background,
         "eligible": eligible,
     }
     _write_json_once(test_path, result)
 
-    selection["test_evaluated"] = True
-    selection["test_result"] = test_path.relative_to(model_root).as_posix()
-    temporary = selection_path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n")
-    os.replace(temporary, selection_path)
+    _mark_selection_tested(selection_path, selection, model_root, test_path)
     return result
-
-
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial", required=True)
-    parser.add_argument("--sensors-root", type=Path, default=Path("sensors"))
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--workers", type=int, default=2)
-    parser.add_argument(
-        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
-    )
-    parser.add_argument("--base-cache-dir", type=Path)
-    args = parser.parse_args(argv)
-    args.device = torch.device(args.device)
-    return args
-
-
-def main(argv=None) -> int:
-    args = parse_args(argv)
-    result = evaluate(
-        serial=args.serial,
-        sensors_root=args.sensors_root,
-        device=args.device,
-        batch_size=args.batch_size,
-        workers=args.workers,
-        base_cache_dir=args.base_cache_dir,
-    )
-    print(
-        f"{args.serial} {METHOD}: "
-        f"ball_mae={result['ball']['contact_mae_mm']:.4f} mm "
-        f"dice={result['manual']['mean_dice']:.4f} "
-        f"fpr={result['manual']['false_positive_rate']:.4f} "
-        f"missed={result['manual']['missed_contacts']}"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

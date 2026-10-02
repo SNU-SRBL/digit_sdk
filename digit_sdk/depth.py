@@ -328,26 +328,7 @@ def _torch_estimate_prepared_batch(
             enabled=estimator.device.type == "cuda",
         ):
             activations = estimator._encoder(images)
-    if (
-        estimator.device.type == "cuda"
-        and not predictions
-    ):
-        encoder_complete = torch.cuda.Event()
-        encoder_complete.record(torch.cuda.current_stream(estimator.device))
-        for index, serial in enumerate(ordered):
-            stream = estimator._decoder_streams[serial]
-            stream.wait_event(encoder_complete)
-            with torch.cuda.stream(stream), torch.autocast(
-                device_type="cuda", dtype=torch.float16
-            ):
-                prediction = estimator._decoders[serial](
-                    tuple(value[index:index + 1] for value in activations)
-                )[0, 0] * estimator._maximum_depth_mm[serial]
-                predictions.append(prediction)
-        current = torch.cuda.current_stream(estimator.device)
-        for serial in ordered:
-            current.wait_stream(estimator._decoder_streams[serial])
-    elif estimator.device.type != "cuda":
+    if estimator.device.type != "cuda":
         predictions = [
             estimator._decoders[serial](
                 tuple(value[index:index + 1] for value in activations)
@@ -415,14 +396,6 @@ class DepthEstimator:
             self._backend = TorchDepthBackend(
                 serials, sensors_root, device, base_cache_dir
             )
-            # Mirror the torch internals so the legacy torch-path helpers and
-            # tests that toggle `_compiled_full_batch` keep working.
-            self._encoder = self._backend._encoder
-            self._decoders = self._backend._decoders
-            self._maximum_depth_mm = self._backend._maximum_depth_mm
-            self._decoder_streams = self._backend._decoder_streams
-            self._postprocess_pool = self._backend._postprocess_pool
-            self._compiled_full_batch = self._backend._compiled_full_batch
         elif backend_name == "onnx":
             self._backend = OnnxDepthBackend(serials, sensors_root, device)
         else:
@@ -446,20 +419,14 @@ class DepthEstimator:
         self, inputs: Mapping[str, DepthInput]
     ) -> Dict[str, np.ndarray]:
         """Estimate a prepared batch using the active backend."""
-        backend = getattr(self, "_backend", None)
-        if backend is not None and backend.kind != "torch":
-            return backend.estimate_prepared_batch(inputs)
-        return _torch_estimate_prepared_batch(self, inputs)
+        return self._backend.estimate_prepared_batch(inputs)
 
     @torch.inference_mode()
     def estimate_prepared_batch_tensors(
         self, inputs: Mapping[str, DepthInput]
     ) -> Dict[str, torch.Tensor]:
         """Estimate a batch and return GPU float32 depth tensors."""
-        backend = getattr(self, "_backend", None)
-        if backend is not None and backend.kind != "torch":
-            return backend.estimate_prepared_batch_tensors(inputs)
-        return _torch_estimate_prepared_batch_tensors(self, inputs)
+        return self._backend.estimate_prepared_batch_tensors(inputs)
 
     def estimate(self, serial: str, frame: np.ndarray) -> np.ndarray:
         """Provide a convenience wrapper for one frame; scheduling is batched."""

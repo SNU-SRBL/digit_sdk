@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from digit_sdk.depth import DepthEstimator, _resize_depth
+from digit_sdk.depth import _resize_depth, _torch_estimate_prepared_batch_tensors
 from digit_sdk.temporal import NeuralFeelsFIR, PersistenceCutoff
 
 
@@ -106,9 +106,7 @@ def test_estimate_prepared_batch_tensors_shape_and_range():
         )
     }
 
-    results = DepthEstimator.estimate_prepared_batch_tensors(
-        estimator, prepared
-    )
+    results = _torch_estimate_prepared_batch_tensors(estimator, prepared)
     depth = results["left"]
     assert tuple(depth.shape) == (240, 320)
     assert depth.dtype == torch.float32
