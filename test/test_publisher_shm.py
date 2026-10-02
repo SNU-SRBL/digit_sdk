@@ -6,6 +6,7 @@ from pathlib import Path
 import types
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from digit_sdk.publisher_shm import (
@@ -193,4 +194,40 @@ def test_launch_cleanup_is_serial_scoped():
     assert "--serial {serial}" in source
     assert "/dev/shm/tactile_{serial}" in source
     assert '"_surface"' in source
-    assert '"_force"' in source
+    assert '"_force"' not in source
+
+
+def test_force_rgb_matches_emitted_pointcloud_rows():
+    from ros2.surface_publisher import SurfacePublisher
+
+    publisher = object.__new__(SurfacePublisher)
+    publisher._force_rgb = np.array(
+        [
+            [[10, 11, 12], [20, 21, 22]],
+            [[30, 31, 32], [40, 41, 42]],
+        ],
+        dtype=np.uint8,
+    )
+    publisher._point_sample_mm = 0.0
+    publisher._ppmm = 10.0
+    depth = np.array([[0.0, 1.0], [2.0, 0.0]], dtype=np.float32)
+
+    np.testing.assert_array_equal(
+        publisher._point_colors(depth),
+        np.array([[20, 21, 22], [30, 31, 32]], dtype=np.uint8),
+    )
+
+
+def test_surface_publisher_ignores_empty_force_rgb():
+    from ros2.surface_publisher import SurfacePublisher
+
+    publisher = object.__new__(SurfacePublisher)
+    publisher._force_rgb = None
+    publisher.get_logger = lambda: types.SimpleNamespace(warning=lambda _message: None)
+    message = types.SimpleNamespace(
+        encoding="rgb8", width=0, height=0, step=0, data=b""
+    )
+
+    publisher._receive_force_rgb(message)
+
+    assert publisher._force_rgb is None

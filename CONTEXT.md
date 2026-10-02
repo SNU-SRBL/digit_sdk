@@ -6,13 +6,21 @@
   sensor.
 - **Per-sensor rate:** processed depth frames per second for each sensor, not
   the sum across sensors.
-- **Production throughput:** four active sensors at 60 Hz each on the
-  workstation, or 240 depth frames/s aggregate.
+- **Production profile:** QVGA capture and depth publication default to 30 Hz
+  per sensor. Actual throughput depends on the connected cameras and host.
 - **ROS process topology:** one `camera_shm` per sensor, an optional
   `raw_publisher` per sensor, one central `pipeline_node`, and one
   `surface_publisher` instance per enabled surface output. When depth and point
   cloud are both enabled, separate instances consume the same latest-depth SHM
   so point-cloud serialization cannot block depth.
+- **Force publisher:** optional per-sensor process that reads camera SHM,
+  runs `ForceEstimator`, and publishes DDS force outputs. It starts only when
+  both launch `publish_force:=true` and that sensor's `force.enable_force: true`;
+  otherwise no force model is loaded into RAM or VRAM.
+- **Force-coloured point cloud:** optional `rgb` field on the standard
+  point-cloud topic. It resizes the latest force RGB visualization to the
+  depth grid; it is for visualization and is not frame-synchronized or a
+  calibrated force-to-3D mapping.
 - **GPU inference scheduling:** ownership and scheduling of Transformer model
   execution. It is independent of the retained per-sensor ROS process topology.
 - **Sensor slot:** a stable batch position bound explicitly to one sensor
@@ -21,9 +29,9 @@
   four sensor slots.
 - **Sensor decoder:** reassembly, fusion, and metric-depth head calibrated only
   for one sensor. Encoder fine-tuning is outside the production design.
-- **Batch deadline:** the 60 Hz scheduling boundary at which the coordinator
-  consumes each sensor's latest unseen frame. A missing sensor never stalls the
-  others.
+- **Batch deadline:** the configured scheduling boundary (30 Hz by default) at
+  which the coordinator consumes each sensor's latest unseen frame. A missing
+  sensor never stalls the others.
 - **ProcessingEngine:** public multi-sensor runtime. It owns slot scheduling,
   batched depth inference, post-processing, and typed results; it no longer
   creates one processor/model per sensor.

@@ -162,9 +162,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Tests
-tests/
-
 # Datasets
 #  Datasets are often large and can be stored in a separate location or managed with a
 #  data management tool.  If you want to ignore datasets in your project, uncomment the
@@ -174,18 +171,13 @@ sensors/D21273/calibration
 sensors/D21275/calibration
 sensors/D21242/calibration
 sensors/D21119/calibration
-# Keep calibration binaries local, but version the canonical dataset index.
-!sensors/*/calibration/
 sensors/*/calibration/**
-!sensors/*/calibration/dataset.yaml
-!sensors/*/calibration/manifest.jsonl
-!sensors/*/calibration/splits/
-!sensors/*/calibration/splits/*.json
 # Downloaded model files (large binaries)
 models/*.ckpt
 models/*.pth
 
 # TensorRT / ONNX depth export artifacts (rebuilt by scripts/export_trt_fp16.py)
+sensors/*/model/**
 sensors/*/model/depth/decoder.pth
 sensors/*/model/tactile_transformer/**/decoder.pth
 sensors/*/model/depth/*.onnx
@@ -201,3 +193,4 @@ log/
 sparsh-main/
 
 fix/
+.scratch/

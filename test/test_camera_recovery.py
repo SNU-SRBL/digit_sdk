@@ -51,14 +51,13 @@ def test_connect_uses_stable_serial_path_and_discards_startup_frames():
 
     with patch("digit_sdk.camera.Path.exists", return_value=True), patch(
         "digit_sdk.camera.os.path.realpath", return_value="/dev/video8"
-    ), patch("digit_sdk.camera.cv2.VideoCapture", return_value=capture) as open_:
+    ), patch("digit_sdk.camera.V4L2Capture", return_value=capture) as open_:
         camera.connect(verbose=False)
 
-    open_.assert_called_once_with(
-        "/dev/v4l/by-id/usb-Facebook_DIGIT_DTEST-video-index0"
-    )
+    args, kwargs = open_.call_args
+    assert args == ("/dev/v4l/by-id/usb-Facebook_DIGIT_DTEST-video-index0", 320, 240, 60)
+    assert kwargs["phase_timings"] == camera._last_connect_timings
     assert capture.read.call_count == 10
-    capture.set.assert_any_call(cv2.CAP_PROP_BUFFERSIZE, 3)
 
 
 def test_connect_rejects_failed_startup_read():
@@ -69,7 +68,7 @@ def test_connect_rejects_failed_startup_read():
 
     with patch("digit_sdk.camera.Path.exists", return_value=True), patch(
         "digit_sdk.camera.os.path.realpath", return_value="/dev/video8"
-    ), patch("digit_sdk.camera.cv2.VideoCapture", return_value=capture):
+    ), patch("digit_sdk.camera.V4L2Capture", return_value=capture):
         with pytest.raises(RuntimeError, match="warm-up failed"):
             camera.connect(verbose=False)
 
@@ -258,7 +257,7 @@ def test_recovery_event_records_bounded_window(tmp_path):
         side_effect=lambda frame: bool(np.array_equal(frame, corrupt))
     )
 
-    with patch("digit_sdk.camera.cv2.VideoCapture", return_value=capture), patch(
+    with patch("digit_sdk.camera.V4L2Capture", return_value=capture), patch(
         "digit_sdk.camera.Path.exists", return_value=True
     ), patch("digit_sdk.camera.os.path.realpath", return_value="/dev/video99"):
         for _ in range(20):

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="digit_sdk",
-    version="0.1.0",
+    version="1.0.0",
     description="SDK for DIGIT tactile depth, point-cloud, and force estimation",
     author="Byung-Hyun Song",
     author_email="bh.song@snu.ac.kr",
@@ -12,7 +12,7 @@ setup(
         "calibration.annotate_ball": ["static/*"],
     },
     install_requires=[
-        "pillow==10.0.0",
+        "pillow>=10.0.0",
         "numpy==1.26.4",
         "opencv-contrib-python==4.14.0.94",
         "scipy>=1.13.1",
@@ -40,7 +40,7 @@ setup(
             "xformers>=0.0.22",
         ],
     },
-    python_requires=">=3.9",
+    python_requires=">=3.10",
     entry_points={
         "console_scripts": [
             "digit-annotate-contact=calibration.annotate_contact.server:main",
@@ -49,8 +49,6 @@ setup(
             "digit-collect-ball=calibration.collect_ball:main",
             "digit-collect-manual=calibration.collect_manual_contacts:main",
             "digit-finalize-calibration=calibration.finalize_dataset:main",
-            "digit-evaluate-decoder=calibration.evaluate_decoder:main",
-            "digit-promote-decoder=calibration.promote_decoder:main",
             "digit-promote-calibration=calibration.promote_dataset:main",
             "digit-train-decoder=calibration.train_decoder:main",
             "digit-validate-dataset=calibration.validate_dataset:main",

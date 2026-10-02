@@ -24,7 +24,6 @@ from calibration.tactile_transformer.losses import (
 )
 from calibration.tactile_transformer.model import (
     TactileDPT,
-    contact_head_state,
     decoder_state,
     freeze_encoder,
 )
@@ -37,14 +36,12 @@ from calibration.tactile_transformer.train import (
     TRAINING_PROTOCOL,
     _load_decoder,
     _save_checkpoint,
+    background_loss,
     checkpoint_rank,
-    experimental_objective,
-    guard_output_root,
     mixed_steps,
-    objective_name,
     parse_args,
 )
-from calibration.train_decoder import completed_run_matches
+from calibration.train_decoder import completed_run_matches, install_selected_decoder
 
 
 def _write_image(path: Path, value: int = 0):
@@ -268,7 +265,7 @@ def test_completed_run_requires_matching_protocol(tmp_path):
     (run_root / "training.json").write_text(json.dumps({
         "training_protocol": TRAINING_PROTOCOL,
         "serial": "DTEST",
-        "objective": "mixed",
+        "objective": "mixed_background",
         "seed": 17,
     }))
 
@@ -279,6 +276,23 @@ def test_completed_run_requires_matching_protocol(tmp_path):
     )
 
 
+def test_selected_decoder_is_installed_by_training(tmp_path):
+    sensor_root = tmp_path / "DTEST"
+    source = sensor_root / "model/tactile_transformer/mixed_background/decoder.pth"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"decoder")
+    (sensor_root / "DTEST.yaml").write_text("device_type: DIGIT\n")
+
+    destination = install_selected_decoder(tmp_path, "DTEST", {
+        "selected": {"decoder": "mixed_background/decoder.pth"},
+        "maximum_depth_mm": 2.2,
+    })
+
+    assert destination == sensor_root / "model/depth/decoder.pth"
+    assert destination.read_bytes() == b"decoder"
+    assert "maximum_depth_mm: 2.2" in (sensor_root / "DTEST.yaml").read_text()
+
+
 def test_selection_writes_only_method_scoped_artifacts(tmp_path):
     model_root = tmp_path / "tactile_transformer"
     for seed, dice, fpr, mae in (
@@ -286,11 +300,11 @@ def test_selection_writes_only_method_scoped_artifacts(tmp_path):
         (29, 0.833, 0.017, 0.085),
         (43, 0.834, 0.023, 0.081),
     ):
-        run_root = model_root / "mixed" / f"seed_{seed}"
+        run_root = model_root / "mixed_background" / f"seed_{seed}"
         run_root.mkdir(parents=True)
         (run_root / "decoder.pth").write_bytes(f"seed-{seed}".encode())
         (run_root / "training.json").write_text(json.dumps({
-            "objective": "mixed",
+            "objective": "mixed_background",
             "seed": seed,
             "dataset_id": "DTEST",
             "ball_split_id": "ball",
@@ -314,10 +328,10 @@ def test_selection_writes_only_method_scoped_artifacts(tmp_path):
 
     result = select(model_root, "DTEST", 0.005)
 
-    assert result["method"] == "mixed"
+    assert result["method"] == "mixed_background"
     assert result["selected"]["seed"] == 29
-    assert (model_root / "mixed/decoder.pth").read_bytes() == b"seed-29"
-    assert (model_root / "mixed/selection.json").is_file()
+    assert (model_root / "mixed_background/decoder.pth").read_bytes() == b"seed-29"
+    assert (model_root / "mixed_background/selection.json").is_file()
     assert not (model_root / "decoder.pth").exists()
     assert not (model_root / "selection.json").exists()
 
@@ -335,15 +349,11 @@ def test_frozen_test_metrics_compare_raw_arrays():
     assert mask["missed_contact"] is False
 
 
-def test_decoder_state_excludes_experimental_contact_head():
+def test_decoder_state_excludes_encoder():
     model = TactileDPT()
 
     state = decoder_state(model)
-    head = contact_head_state(model)
 
-    assert head and all(key.startswith("head_contact.") for key in head)
-    assert not any(key.startswith("head_contact.") for key in state)
-    assert set(state).isdisjoint(head)
     assert not any(key.startswith("transformer_encoders.") for key in state)
 
 
@@ -352,26 +362,18 @@ def test_production_decoder_strict_loads_training_checkpoint(tmp_path):
 
     model = TactileDPT()
     freeze_encoder(model)
-    with torch.no_grad():
-        for parameter in model.head_contact.parameters():
-            parameter.add_(0.05)
     checkpoint = tmp_path / "decoder.pth"
-    _save_checkpoint(checkpoint, model, {"objective": "mixed_fixed_background"})
+    _save_checkpoint(checkpoint, model, {"objective": "mixed_background"})
 
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
     production = _SensorDecoder()
     production.load_state_dict(payload["model_state_dict"], strict=True)
-    assert "contact_head_state_dict" in payload
 
     reloaded = TactileDPT()
     _load_decoder(reloaded, checkpoint)
-    for expected, actual in zip(
-        model.head_contact.parameters(), reloaded.head_contact.parameters()
-    ):
-        torch.testing.assert_close(actual, expected)
 
 
-def test_legacy_decoder_checkpoint_without_contact_head_still_loads(tmp_path):
+def test_decoder_checkpoint_loads_without_encoder_weights(tmp_path):
     model = TactileDPT()
     freeze_encoder(model)
     checkpoint = tmp_path / "legacy_decoder.pth"
@@ -384,46 +386,26 @@ def test_legacy_decoder_checkpoint_without_contact_head_still_loads(tmp_path):
     _load_decoder(reloaded, checkpoint)
 
 
-def test_experimental_flags_require_explicit_output_root(tmp_path):
-    default = parse_args(["--serial", "DTEST"])
-    assert not experimental_objective(default)
-    guard_output_root(default)
-    assert objective_name(default) == "mixed"
-
-    experimental = parse_args([
-        "--serial", "DTEST", "--background-noise-sigma", "7",
-    ])
-    assert experimental_objective(experimental)
-    with pytest.raises(ValueError, match="--output-root"):
-        guard_output_root(experimental)
-
-    scoped = parse_args([
-        "--serial", "DTEST", "--background-noise-sigma", "7",
-        "--output-root", str(tmp_path),
-    ])
-    guard_output_root(scoped)
-    assert objective_name(scoped) == "mixed_fixed_background"
-    assert scoped.output_root == tmp_path
-
-
-def test_background_noise_is_seeded_and_applied(tmp_path):
-    _make_dataset(tmp_path)
-
-    clean = BackgroundSupportDataset(tmp_path, "train")
-    first = BackgroundSupportDataset(tmp_path, "train", noise_sigma=7.0, seed=29)
-    same = BackgroundSupportDataset(tmp_path, "train", noise_sigma=7.0, seed=29)
-    other = BackgroundSupportDataset(tmp_path, "train", noise_sigma=7.0, seed=30)
-
-    clean_sample = clean[0]
-    torch.testing.assert_close(first[0]["image"], same[0]["image"])
-    assert not torch.allclose(first[0]["image"], other[0]["image"])
-    assert not torch.allclose(first[0]["image"], clean_sample["image"])
-    assert clean_sample["has_contact"] is False
-    assert first[0]["mask"].shape == clean_sample["mask"].shape
+def test_fixed_background_support_loss_is_canonical():
+    prediction = torch.full((1, 1, 2, 2), 0.2)
+    defaults = parse_args(["--serial", "DTEST"])
+    defaults.device = torch.device("cpu")
+    actual = background_loss(prediction, defaults)
+    expected = (
+        0.1 * outside_zero_loss(
+            prediction, torch.zeros_like(prediction, dtype=torch.bool)
+        )
+        + 0.1 * support_loss(
+        prediction,
+        torch.zeros_like(prediction, dtype=torch.bool),
+        threshold_mm=defaults.contact_threshold_mm,
+        temperature_mm=defaults.support_temperature_mm,
+        )
+    )
+    torch.testing.assert_close(actual, expected)
 
 
 def test_mixed_steps_track_executed_streams():
     ball, manual, background = [0] * 5, [0] * 2, [0] * 3
 
-    assert mixed_steps(ball, manual) == (10, 5)
     assert mixed_steps(ball, manual, background) == (15, 5)

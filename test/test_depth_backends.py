@@ -2,6 +2,7 @@
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -70,6 +71,29 @@ def test_explicit_backend_must_be_known(tmp_path):
     root = _make_sensors_root(tmp_path)
     with pytest.raises(ValueError):
         _resolve_backend("cuda", root, SERIALS)
+
+
+def test_depth_estimator_delegates_torch_backend():
+    calls = []
+
+    class Backend:
+        kind = "torch"
+
+        def estimate_prepared_batch(self, inputs):
+            calls.append(("array", inputs))
+            return {"DTEST": np.zeros((1, 1), dtype=np.float32)}
+
+        def estimate_prepared_batch_tensors(self, inputs):
+            calls.append(("tensor", inputs))
+            return {"DTEST": torch.zeros((1, 1))}
+
+    estimator = DepthEstimator.__new__(DepthEstimator)
+    estimator._backend = Backend()
+    inputs = {"DTEST": SimpleNamespace()}
+
+    assert set(estimator.estimate_prepared_batch(inputs)) == {"DTEST"}
+    assert set(estimator.estimate_prepared_batch_tensors(inputs)) == {"DTEST"}
+    assert calls == [("array", inputs), ("tensor", inputs)]
 
 
 def test_shared_artifact_resolution_and_missing_error(tmp_path):

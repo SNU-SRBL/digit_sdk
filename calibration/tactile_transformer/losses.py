@@ -70,30 +70,3 @@ def outside_zero_loss(
     prediction_mm: torch.Tensor, target_mask: torch.Tensor
 ) -> torch.Tensor:
     return _masked_mean(prediction_mm.square(), ~target_mask.bool())
-
-
-def contact_bce_loss(
-    logits: torch.Tensor, target_mask: torch.Tensor
-) -> torch.Tensor:
-    """Class-balanced BCE for the independent contact-probability head."""
-    target = target_mask.bool()
-    losses = []
-    for sample_logits, sample_target in zip(logits, target):
-        positive = sample_target
-        negative = ~positive
-        positive_loss = (
-            F.binary_cross_entropy_with_logits(
-                sample_logits[positive], torch.ones_like(sample_logits[positive])
-            )
-            if positive.any()
-            else sample_logits.sum() * 0.0
-        )
-        negative_loss = (
-            F.binary_cross_entropy_with_logits(
-                sample_logits[negative], torch.zeros_like(sample_logits[negative])
-            )
-            if negative.any()
-            else sample_logits.sum() * 0.0
-        )
-        losses.append(0.5 * (positive_loss + negative_loss))
-    return torch.stack(losses).mean()

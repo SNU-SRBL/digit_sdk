@@ -18,7 +18,7 @@ ament_python_install_package(${PROJECT_NAME})
 # pipeline_node: rclpy, ProcessingEngine in-process, writes SHM output
 # raw_publisher: rclpy, publishes raw frames from SHM
 # surface_publisher: rclpy, publishes depth + pointcloud from SHM
-# force_publisher: rclpy, publishes force_field + force_vector from SHM
+# force_publisher: rclpy, estimates force from camera SHM and publishes DDS
 install(PROGRAMS
   ros2/camera_shm.py
   DESTINATION lib/${PROJECT_NAME}
@@ -65,6 +65,11 @@ install(DIRECTORY
 install(DIRECTORY
   sensors/
   DESTINATION share/${PROJECT_NAME}/sensors
+)
+
+install(DIRECTORY
+  models/
+  DESTINATION share/${PROJECT_NAME}/models
 )
 
 if(BUILD_TESTING)

@@ -6,7 +6,7 @@
   <description>Digit SDK for tactile sensor data processing and streaming</description>
   
   <maintainer email="bhsong@snu.ac.kr">bhsong</maintainer>
-  <license>MIT</license>
+  <license>GPL-3.0-only</license>
   
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>

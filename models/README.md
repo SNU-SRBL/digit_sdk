@@ -14,7 +14,7 @@ This directory contains pretrained Sparsh models for vision-based tactile force 
 - **Source**: `facebook/sparsh-dino-base` on HuggingFace
 - **Training**: Self-supervised learning on tactile sensor data (DINO method)
 - **Format**: PyTorch Lightning checkpoint
-- **Size**: ~300 MB
+- **Size**: ~1.8 GB
 
 ### Decoder: `sparsh_digit_forcefield_decoder.pth`
 - **Architecture**: Multi-scale DPT-style decoder
@@ -24,7 +24,7 @@ This directory contains pretrained Sparsh models for vision-based tactile force 
 - **Source**: `facebook/sparsh-digit-forcefield-decoder` on HuggingFace (epoch 31)
 - **Training**: Supervised on DIGIT sensor force data
 - **Compatibility**: Requires sparsh-dino-base encoder (embed_dim=768)
-- **Size**: ~50 MB
+- **Size**: ~15 MB
 
 ## Source dependency
 
@@ -69,8 +69,8 @@ After downloading, verify files exist and are not corrupted:
 ```bash
 ls -lh models/
 # Should show:
-# sparsh_dino_base_encoder.ckpt (~300 MB)
-# sparsh_digit_forcefield_decoder.pth (~50 MB)
+# sparsh_dino_base_encoder.ckpt (~1.8 GB)
+# sparsh_digit_forcefield_decoder.pth (~15 MB)
 ```
 
 You can also run a verification check:

@@ -10,10 +10,9 @@ import numpy as np
 import pyudev
 
 from digit_sdk.utils import load_config
+from digit_sdk.v4l2_capture import V4L2Capture
 
-'''This module provides a Camera class for low latency image acquisition using OpenCV.
-It supports both DIGIT cameras and generic V4L2 cameras.
-'''
+'''This module provides low-latency DIGIT and generic V4L2 image acquisition.'''
 
 DIAGNOSTIC_POST_FRAMES = 3
 
@@ -194,7 +193,7 @@ class Camera:
     @staticmethod
     def _is_corrupt(bgr: np.ndarray, threshold: float = 3.0) -> bool:
         """
-        Detect STM32 DMA tear: per-column step-discontinuity detector.
+        Detect a row discontinuity: per-column step-discontinuity detector.
 
         A tear is a horizontal line where pixel values jump instantaneously
         (no gradient). Each column independently scans all 239 row-pairs for
@@ -238,7 +237,7 @@ class Camera:
         return (prev_flat + next_flat) / 2.0 > 0.80
 
     def connect(self, verbose=True):
-        """Connect to the camera using OpenCV VideoCapture (digit-interface pattern)."""
+        """Connect a DIGIT through its native V4L2 MMAP queue."""
         if self.device_type and self.device_type.upper() == "DIGIT" and self.serial:
             stable = Path(
                 f"/dev/v4l/by-id/"
@@ -255,14 +254,27 @@ class Camera:
                     )
                 self.device = digit_info["dev_name"]
                 self.dev_id = int(re.search(r"\d+$", self.device).group(0))
-        self.cap = cv2.VideoCapture(self.device)  # path string, survives index shifts
-        if not self.cap.isOpened():
-            self.cap.release()
-            raise RuntimeError(f"Could not open camera {self.device}")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_imgw)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_imgh)
-        self.cap.set(cv2.CAP_PROP_FPS, self.framerate)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+        if self.device_type and self.device_type.upper() == "DIGIT":
+            try:
+                phase_timings = {}
+                started = time.monotonic()
+                self.cap = V4L2Capture(
+                    self.device, self.raw_imgw, self.raw_imgh, self.framerate,
+                    phase_timings=phase_timings,
+                )
+                phase_timings["open_configure_s"] = time.monotonic() - started
+            except OSError as error:
+                raise RuntimeError(f"Could not open camera {self.device}") from error
+        else:
+            self.cap = cv2.VideoCapture(self.device)
+            if not self.cap.isOpened():
+                self.cap.release()
+                raise RuntimeError(f"Could not open camera {self.device}")
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.raw_imgw)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.raw_imgh)
+            self.cap.set(cv2.CAP_PROP_FPS, self.framerate)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+        warmup_started = time.monotonic()
         for _ in range(10):
             ret, warmup = self.cap.read()
             if not ret:
@@ -273,6 +285,9 @@ class Camera:
             diag = getattr(self, "_diag", None)
             if diag is not None and diag.enabled:
                 diag.add_frame("connect_discard", warmup)
+        if self.device_type and self.device_type.upper() == "DIGIT":
+            phase_timings["warmup_10_s"] = time.monotonic() - warmup_started
+            self._last_connect_timings = phase_timings
         if verbose:
             print("Camera ready for use!")
 
@@ -362,7 +377,7 @@ class Camera:
         """
         STREAMOFF/STREAMON cycle via release()+connect().
 
-        Resets STM32 DMA state. connect() discards startup frames.
+        Resets the camera stream. connect() discards startup frames.
         """
         if self._recovery_started_at is None:
             self._recovery_started_at = time.monotonic()
