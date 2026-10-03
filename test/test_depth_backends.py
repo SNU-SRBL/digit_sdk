@@ -1,5 +1,6 @@
 """Backend selection, artifact resolution, and torch/ONNX/TRT equivalence."""
 
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,9 +31,14 @@ def _make_sensors_root(tmp_path, serials=SERIALS, kind=None):
         )
         model_root = tmp_path / serial / "model" / "depth"
         model_root.mkdir(parents=True)
+        production_decoder = model_root / "decoder.pth"
+        production_decoder.write_bytes(b"current")
+        os.utime(production_decoder, ns=(1_700_000_000_000_000_000,) * 2)
         if kind in ("onnx", "engine"):
             suffix = ".onnx" if kind == "onnx" else "_trt_fp16.engine"
-            (model_root / f"{serial}_decoder{suffix}").write_bytes(b"x")
+            artifact = model_root / f"{serial}_decoder{suffix}"
+            artifact.write_bytes(b"x")
+            os.utime(artifact, ns=(1_700_000_001_000_000_000,) * 2)
     if kind in ("onnx", "engine"):
         shared = (
             "dpt_shared_encoder.onnx"
@@ -53,6 +59,31 @@ def test_auto_falls_back_to_onnx_without_engines(tmp_path):
     root = _make_sensors_root(tmp_path, kind="onnx")
     assert _artifacts_present(root, SERIALS, "onnx")
     assert _resolve_backend("auto", root, SERIALS) == "onnx"
+
+
+def test_auto_skips_stale_trt_and_uses_fresh_onnx(tmp_path):
+    root = _make_sensors_root(tmp_path, kind="engine")
+    shared_onnx = root / SERIALS[0] / "model/depth/dpt_shared_encoder.onnx"
+    shared_onnx.write_bytes(b"x")
+    for serial in SERIALS:
+        model_root = root / serial / "model/depth"
+        onnx_decoder = model_root / f"{serial}_decoder.onnx"
+        onnx_decoder.write_bytes(b"x")
+        os.utime(onnx_decoder, ns=(1_700_000_002_000_000_000,) * 2)
+        trt_decoder = model_root / f"{serial}_decoder_trt_fp16.engine"
+        os.utime(trt_decoder, ns=(1_699_999_999_000_000_000,) * 2)
+
+    assert _resolve_backend("auto", root, SERIALS) == "onnx"
+    assert _resolve_backend("trt_fp16", root, SERIALS) == "trt_fp16"
+
+
+def test_auto_skips_stale_onnx_and_uses_torch(tmp_path):
+    root = _make_sensors_root(tmp_path, kind="onnx")
+    for serial in SERIALS:
+        artifact = root / serial / "model/depth" / f"{serial}_decoder.onnx"
+        os.utime(artifact, ns=(1_699_999_999_000_000_000,) * 2)
+
+    assert _resolve_backend("auto", root, SERIALS) == "torch"
 
 
 def test_auto_falls_back_to_torch_without_artifacts(tmp_path):
